@@ -87,7 +87,10 @@ class Beads:
     async def close(self, id: str, reason: str) -> dict:
         issue = await self.read(id)
         if issue.get("status") != "closed":
-            await self.call("close", id, "--reason", reason)
+            # Beads enforces assignee ownership. The host resolves on behalf of the
+            # assigned logical developer after validation; never force past gates.
+            actor = ["--actor", issue["assignee"]] if issue.get("assignee") else []
+            await self.call("close", id, "--reason", reason, *actor)
         return await self.read(id)
 
     async def delete(self, id: str) -> dict:

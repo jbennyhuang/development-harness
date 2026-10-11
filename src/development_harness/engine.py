@@ -331,7 +331,9 @@ class Engine:
         e = self.store.require("execution", id)
         e["failures"] = e.get("failures", 0) + 1
         self.save_execution(e)
-        self.store.emit("execution.failed", {"message": str(error), "failures": e["failures"]}, id)
+        self.store.emit("execution.failed", {"message": str(error), "failures": e["failures"],
+                         "error": error.as_dict() if isinstance(error, HarnessError) else
+                         {"code": "unexpected_error", "message": str(error)}}, id)
         if e["failures"] >= self.config.max_failures:
             self.pause_issue(id, "failure_limit", str(error))
         if self.integration_issue == id:
