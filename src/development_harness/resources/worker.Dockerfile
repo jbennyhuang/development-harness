@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-cer
 RUN curl -fsSL https://github.com/jdx/mise/releases/download/v2026.9.18/mise-v2026.9.18-linux-x64.tar.gz \
     | tar -xz -C /usr/local/bin --strip-components=2 mise/bin/mise
 ENV UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_PREFERENCE=only-managed \
-    PATH="/opt/harness/bin:/root/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+    PATH="/opt/harness/bin:/root/.local/share/mise/installs/node/24.21.0/bin:/usr/local/bin:/usr/bin:/bin"
 RUN uv python install 3.14.3 && uv venv --python 3.14.3 /opt/harness
 RUN mise use --global node@24.21.0 && mise reshim
 RUN mise exec node@24.21.0 -- npm install --global @agentclientprotocol/codex-acp@2.2.2

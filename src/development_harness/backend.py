@@ -131,7 +131,11 @@ class Docker:
             await self.remove(name)
 
     def agent_command(self, id: str, profile: Profile, env: dict[str, str]) -> list[str]:
-        argv = ["docker", "exec", "-i", "--workdir", "/workspace"]
+        # Provider startup must not evaluate an issue's untrusted mise configuration.
+        # Use the pinned image tools directly; this also repairs resumed containers from
+        # the initial image which placed mise shims on PATH.
+        argv = ["docker", "exec", "-i", "--workdir", "/workspace", "--env",
+                "PATH=/opt/harness/bin:/root/.local/share/mise/installs/node/24.21.0/bin:/usr/local/bin:/usr/bin:/bin"]
         for key in (*profile.env_names, *env.keys()):
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
                 raise HarnessError("invalid_environment", "Environment names must be identifiers")
