@@ -1,0 +1,40 @@
+[project]
+name = "development-harness"
+version = "0.1.0"
+description = "A durable CLI for isolated ACP development and review workflows"
+readme = "README.md"
+authors = [
+    { name = "jbennyhuang", email = "jbennyhuang@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "agent-client-protocol>=0.8,<1",
+    "aiohttp>=3.13,<4",
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
+]
+
+[project.scripts]
+harness = "development_harness:main"
+development-harness = "development_harness:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.3,<2",
+    "ruff>=0.14,<1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
