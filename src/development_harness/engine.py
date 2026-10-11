@@ -308,7 +308,7 @@ class Engine:
                 await self.pause_project(exc.code, str(exc))
             elif exc.code == "target_moved":
                 self.store.transition(id, Stage.PREPARING_MERGE, approval=None)
-            elif exc.code == "dirty_target":
+            elif exc.code in ("dirty_target", "quiesce_failed"):
                 self.pause_issue(id, exc.code, str(exc))
             else:
                 self.failure(id, exc)
@@ -379,10 +379,11 @@ class Engine:
                 self.store.emit("agent.response", {"session": data.get("session_id"), "content": update.get("content")}, id, a["id"])
 
         factory = self.adapter_factory or ADAPTERS[profile.provider]
-        adapter = factory(profile, emit)
-        self.adapters[a["id"]] = adapter
+        adapter = None
         env = {"HARNESS_WORKER_TOKEN": token, "HARNESS_WORKER_URL": self.worker_url}
         try:
+            adapter = factory(profile, emit)
+            self.adapters[a["id"]] = adapter
             await self.backend.prepare(id, await self.git.bundle(id), e["branch"])
             if hasattr(self.backend, "credentials"):
                 await self.backend.credentials(id, profile)
@@ -412,14 +413,33 @@ class Engine:
             result = current.get("result")
             if not result:
                 raise HarnessError("missing_submission", "Agent ended its turn without submitting a result")
-            await self.apply_result(id, a["id"], generation, Result.model_validate(result))
         finally:
-            await adapter.close()
-            self.adapters.pop(a["id"], None)
             current = self.store.require("agent", a["id"])
             if current.get("issue_id") == id:
                 current.update(state="assigned_waiting", credential_hash=None)
                 self.store.put("agent", a["id"], current)
+
+            async def teardown():
+                try:
+                    if adapter is not None:
+                        await adapter.close()
+                finally:
+                    self.adapters.pop(a["id"], None)
+                    await self.backend.quiesce(id)
+
+            # Revoke synchronously above, then finish cleanup even if cancellation repeats.
+            # No quota control task is awaited here: it may itself be waiting for this turn.
+            cleanup = asyncio.create_task(teardown())
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
+        await self.apply_result(id, a["id"], generation, Result.model_validate(result))
 
     def worker_identity(self, token: str) -> tuple[dict, dict]:
         digest = hashlib.sha256(token.encode()).hexdigest()
@@ -427,7 +447,11 @@ class Engine:
         if not a or not a.get("issue_id"):
             raise HarnessError("unauthorized", "Worker credential is expired or invalid")
         e = self.store.require("execution", a["issue_id"])
-        if a.get("attempt") != e["generation"] or a["state"] != "assigned_working":
+        active_stages = {"developer": {Stage.DEVELOPING},
+                         "reviewer": {Stage.REVIEWING, Stage.PREPARING_MERGE}}
+        if (a.get("attempt") != e["generation"] or a["state"] != "assigned_working"
+                or e.get(a.get("role")) != a["id"]
+                or e["stage"] not in active_stages.get(a.get("role"), set())):
             raise HarnessError("stale_assignment", "Worker assignment is no longer active")
         if not self.store.execution_state()["enabled"] or e.get("paused"):
             raise HarnessError("execution_paused", "Execution is paused; preserve changes")
@@ -456,6 +480,14 @@ class Engine:
         e = self.store.require("execution", id)
         if generation != e["generation"]:
             raise HarnessError("stale_assignment", "Result is from an obsolete assignment")
+        if not self.store.execution_state()["enabled"] or e.get("paused"):
+            raise HarnessError("execution_paused", "Execution is paused; preserve changes")
+        agent = self.store.require("agent", agent_id)
+        expected_role = "developer" if e["stage"] == Stage.DEVELOPING else "reviewer"
+        if (agent.get("issue_id") != id or agent.get("role") != expected_role
+                or e.get(expected_role) != agent_id
+                or e["stage"] not in (Stage.DEVELOPING, Stage.REVIEWING, Stage.PREPARING_MERGE)):
+            raise HarnessError("stale_assignment", "Result assignment is no longer active")
         self.store.emit("agent.submitted", result.model_dump(), id, agent_id)
         if result.kind == "guidance" or result.verdict == "blocked":
             self.pause_issue(id, "guidance", result.summary)
@@ -473,6 +505,11 @@ class Engine:
         if revision(issue) != e["specification"]:
             self.revise(id, "Issue specification changed during the assignment")
             return
+        current = self.store.require("execution", id)
+        if current["generation"] != generation or current["stage"] != e["stage"]:
+            raise HarnessError("stale_assignment", "Assignment changed during export")
+        if not self.store.execution_state()["enabled"] or current.get("paused"):
+            raise HarnessError("execution_paused", "Execution paused during export; preserve changes")
         if result.kind == "development":
             self.store.transition(id, Stage.VALIDATING, candidate=candidate, feedback=result.summary, approval=None)
         elif result.kind == "review":

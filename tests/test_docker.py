@@ -40,3 +40,37 @@ async def test_isolated_container_candidate_roundtrip_validation_and_recovery(re
         await backend.cleanup(id)
         await git.cleanup(id)
     assert await backend.inspect(backend.name(id)) is None
+
+
+@pytest.mark.skipif(os.getenv("HARNESS_TEST_DOCKER") != "1", reason="Opt-in actual Docker integration")
+async def test_quiesce_kills_background_writer_and_restart_preserves_files(repo):
+    import asyncio
+
+    root, git = repo
+    backend = Docker(root, Config(remote=None, command_timeout=15))
+    id = "background-writer"
+    try:
+        work = await git.prepare(id)
+        await backend.prepare(id, await git.bundle(id), work["branch"])
+        # Detached exec outlives the client; stopping that client cannot stop this writer.
+        await run(["docker", "exec", "--detach", backend.name(id), "python", "-c",
+                   "import time\nfrom pathlib import Path\np=Path('/workspace/writer.txt')\n"
+                   "while True:\n with p.open('a') as f: f.write('tick\\n')\n time.sleep(.05)"], timeout=15)
+        async def written():
+            while True:
+                code, out, _ = await backend.exec(backend.name(id), ["cat", "writer.txt"], check=False)
+                if not code and len(out.splitlines()) >= 3:
+                    return
+                await asyncio.sleep(.05)
+        await asyncio.wait_for(written(), 10)
+        await backend.quiesce(id)
+        assert not (await backend.inspect(backend.name(id)))["State"]["Running"]
+        await backend.prepare(id, await git.bundle(id), work["branch"])
+        _, before, _ = await backend.exec(backend.name(id), ["cat", "writer.txt"])
+        await asyncio.sleep(.3)
+        _, after, _ = await backend.exec(backend.name(id), ["cat", "writer.txt"])
+        assert before == after and len(after.splitlines()) >= 3
+        await backend.quiesce(id)
+    finally:
+        await backend.cleanup(id)
+        await git.cleanup(id)

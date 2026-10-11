@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -54,7 +55,7 @@ class Docker:
                              max_output=self.config.max_log_bytes)
         except BaseException:
             # Terminating docker exec alone does not guarantee the inner command stopped.
-            await run(["docker", "stop", "--time", "2", name], check=False)
+            await run(["docker", "stop", "--time", "2", name], timeout=self.config.command_timeout)
             raise
 
     async def prepare(self, id: str, bundle: Path, branch: str) -> None:
@@ -91,6 +92,14 @@ class Docker:
             await self.exec(self.name(id), ["chmod", "600", str(target)])
 
     async def export(self, id: str) -> Path:
+        # Only the inert PID 1 restarts; all worker processes died at the turn boundary.
+        try:
+            await run(["docker", "start", self.name(id)], timeout=self.config.command_timeout)
+            return await self._export(id)
+        finally:
+            await self.finish_quiesce(id)
+
+    async def _export(self, id: str) -> Path:
         name = self.name(id)
         code, out, _ = await self.exec(name, ["git", "status", "--porcelain"], check=False)
         if code or out.strip():
@@ -104,11 +113,16 @@ class Docker:
 
     async def refresh(self, id: str, bundle: Path) -> None:
         name = self.name(id)
-        await run(["docker", "cp", str(bundle), name + ":/tmp/target.bundle"])
-        # Only transfer refs; the reviewer performs merge-base reconciliation, rebase and squash.
-        await self.exec(name, ["git", "fetch", "/tmp/target.bundle",
-                              "+refs/heads/*:refs/remotes/harness/*",
-                              "+refs/remotes/*:refs/remotes/upstream/*"])
+        try:
+            await run(["docker", "start", name], timeout=self.config.command_timeout)
+            await run(["docker", "cp", str(bundle), name + ":/tmp/target.bundle"],
+                      timeout=self.config.command_timeout)
+            # Only transfer refs; the reviewer performs reconciliation, rebase and squash.
+            await self.exec(name, ["git", "fetch", "/tmp/target.bundle",
+                                  "+refs/heads/*:refs/remotes/harness/*",
+                                  "+refs/remotes/*:refs/remotes/upstream/*"])
+        finally:
+            await self.finish_quiesce(id)
 
     async def validate(self, id: str, bundle: Path) -> list[dict]:
         name = self.name(id) + "-validation"
@@ -144,10 +158,29 @@ class Docker:
                 argv += ["--env", key]
         return [*argv, self.name(id), *profile.command]
 
+    async def finish_quiesce(self, id: str) -> None:
+        """Do not release export/refresh ownership while residual commands can run."""
+        cleanup = asyncio.create_task(self.quiesce(id))
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def quiesce(self, id: str) -> None:
         name = self.name(id)
         if await self.inspect(name):
-            await run(["docker", "stop", "--time", "3", name], check=False)
+            try:
+                await run(["docker", "stop", "--time", "3", name], timeout=self.config.command_timeout)
+            except Exception as exc:
+                raise HarnessError("quiesce_failed", "Could not stop issue container; retry is unsafe") from exc
+            container = await self.inspect(name)
+            if container and container["State"]["Running"]:
+                raise HarnessError("quiesce_failed", "Issue container is still running")
         validation = name + "-validation"
         if await self.inspect(validation):
             await self.remove(validation)

@@ -118,3 +118,162 @@ async def test_completed_merge_finishes_resolution_even_when_dispatch_is_paused(
     await advance(engine, lambda: engine.store.require("execution", id)["stage"] == Stage.DONE)
     assert (await engine.tracker.read(id))["status"] == "closed"
     assert not engine.store.execution_state()["enabled"]
+
+
+@pytest.mark.parametrize("role,stage,valid", [
+    ("developer", Stage.DEVELOPING, True),
+    ("reviewer", Stage.REVIEWING, True),
+    ("reviewer", Stage.PREPARING_MERGE, True),
+    *[("developer", stage, False) for stage in Stage if stage != Stage.DEVELOPING],
+    *[("reviewer", stage, False) for stage in Stage
+      if stage not in (Stage.REVIEWING, Stage.PREPARING_MERGE)],
+])
+async def test_credentials_fenced_to_active_role_and_stage(engine, role, stage, valid):
+    id = await start(engine)
+    e = engine.store.require("execution", id)
+    a = engine.available(role)
+    engine.bind(a, e)
+    e = engine.store.require("execution", id)
+    e.update(stage=stage, generation=7)
+    engine.save_execution(e)
+    a.update(state="assigned_working", attempt=7, credential_hash=hashlib.sha256(b"scoped").hexdigest())
+    engine.store.put("agent", a["id"], a)
+    kind = {Stage.DEVELOPING: "development", Stage.PREPARING_MERGE: "merge"}.get(stage, "review")
+    report = {"kind": kind, "summary": "evidence"}
+    if valid:
+        assert engine.worker_assignment("scoped")["role"] == role
+        assert engine.submit("scoped", report)["accepted"]
+    else:
+        for call in (lambda: engine.worker_assignment("scoped"), lambda: engine.submit("scoped", report)):
+            with pytest.raises(HarnessError, match="no longer active"):
+                call()
+
+
+@pytest.mark.parametrize("mutation", ["binding", "role", "generation", "state", "paused", "project"])
+async def test_credentials_reject_broken_assignment(engine, mutation):
+    id = await start(engine)
+    e = engine.store.require("execution", id)
+    a = engine.available("developer")
+    engine.bind(a, e)
+    e = engine.store.require("execution", id)
+    e.update(stage=Stage.DEVELOPING, generation=3)
+    a.update(state="assigned_working", attempt=3, credential_hash=hashlib.sha256(b"scoped").hexdigest())
+    if mutation == "binding":
+        e["developer"] = "another-developer"
+    elif mutation == "role":
+        a["role"] = "reviewer"
+    elif mutation == "generation":
+        a["attempt"] = 2
+    elif mutation == "state":
+        a["state"] = "assigned_waiting"
+    elif mutation == "paused":
+        e["paused"] = True
+    else:
+        engine.store.set_execution_state(False, "user")
+    engine.save_execution(e)
+    engine.store.put("agent", a["id"], a)
+    with pytest.raises(HarnessError):
+        engine.worker_assignment("scoped")
+    with pytest.raises(HarnessError):
+        engine.submit("scoped", {"kind": "guidance", "summary": "late"})
+
+
+@pytest.mark.parametrize("outcome", ["submitted", "missing", "provider", "cancel", "quota"])
+async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, outcome):
+    from conftest import FixtureAdapter
+
+    id = await start(engine)
+    await engine.tick()
+    await asyncio.gather(*engine.tasks.values())
+    engine.tasks.clear()
+    events = []
+    entered = asyncio.Event()
+    token = None
+
+    class Controlled(FixtureAdapter):
+        async def prompt(self, session_id, text, timeout):
+            nonlocal token
+            token = self.env["HARNESS_WORKER_TOKEN"]
+            (engine.backend.path(id) / "uncommitted.txt").write_text("preserved")
+            entered.set()
+            if outcome == "cancel":
+                await asyncio.Event().wait()
+            if outcome == "provider":
+                raise RuntimeError("provider connection failed")
+            if outcome == "quota":
+                self.emit({"provider_usage_exhausted": True})
+                await asyncio.Event().wait()
+            if outcome == "submitted":
+                await super().prompt(session_id, text, timeout)
+
+        async def close(self):
+            with pytest.raises(HarnessError):
+                engine.worker_assignment(token)
+            events.append("close")
+
+    original_stop = engine.backend.quiesce
+    async def stop(issue):
+        events.append("stop")
+        await original_stop(issue)
+    async def apply(*args):
+        assert events == ["close", "stop"]
+        events.append("apply")
+    engine.backend.quiesce = stop
+    engine.apply_result = apply
+    engine.adapter_factory = lambda profile, emit: Controlled(engine, profile, emit)
+    task = asyncio.create_task(engine.agent_turn(id, Stage.DEVELOPING))
+    engine.tasks[id] = task
+    await asyncio.wait_for(entered.wait(), 5)
+    if outcome == "cancel":
+        task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+    await asyncio.wait_for(asyncio.gather(*engine.control_tasks, return_exceptions=True), 5)
+    assert events[:2] == ["close", "stop"]
+    assert events.count("close") == 1
+    assert ("apply" in events) == (outcome == "submitted")
+    a = engine.store.require("agent", engine.store.require("execution", id)["developer"])
+    assert a["credential_hash"] is None and a["issue_id"] == id
+    assert a["session_id"] and engine.store.get("transcript", a["id"] + ":" + id)
+    assert (engine.backend.path(id) / "uncommitted.txt").read_text() == "preserved"
+    assert bool(a.get("result")) == (outcome == "submitted")
+
+
+async def test_repeated_cancellation_waits_for_quiescence_before_retry(engine):
+    from conftest import FixtureAdapter
+
+    id = await start(engine)
+    await engine.tick()
+    await asyncio.gather(*engine.tasks.values())
+    engine.tasks.clear()
+    prompted, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    closes = 0
+
+    class Controlled(FixtureAdapter):
+        async def prompt(self, *args):
+            prompted.set()
+            await asyncio.Event().wait()
+
+        async def close(self):
+            nonlocal closes
+            closes += 1
+
+    async def stop(issue):
+        stopping.set()
+        await release.wait()
+        engine.backend.stopped.append(issue)
+
+    engine.backend.quiesce = stop
+    engine.adapter_factory = lambda profile, emit: Controlled(engine, profile, emit)
+    task = asyncio.create_task(engine.agent_turn(id, Stage.DEVELOPING))
+    await asyncio.wait_for(prompted.wait(), 5)
+    task.cancel()
+    await asyncio.wait_for(stopping.wait(), 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    a = engine.store.require("agent", engine.store.require("execution", id)["developer"])
+    assert a["credential_hash"] is None
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert closes == 1 and id in engine.backend.stopped
