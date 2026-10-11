@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.0-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.1-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -60,6 +60,7 @@ Credential copying is opt-in. Agents can read the selected credentials inside th
 
 ```powershell
 harness inspect --json
+harness status --json
 harness instructions --json
 harness schema --json
 harness issue create --input issue.json --key feature-123 --json
@@ -68,6 +69,8 @@ harness updates poll --consumer orchestrator --json
 harness updates ack --consumer orchestrator --cursor 12 --json
 harness tui
 ```
+
+`harness status --json` reads only the durable host journal, without starting the service or calling Beads, Docker, or providers. It reports the project path, execution enabled state and pause reason (`execution.reason`), journaled issue counts by stage with paused and terminal totals, agent counts by role and state with locked totals, and pending guidance count. Terminal issues are done or cancelled; stopped agent identities remain counted. Polling cursors and guidance requests are unchanged. A project without a journal reports empty counts and execution disabled (`not_started`).
 
 An issue input contains `title`, `description`, `acceptance`, and optional priority (0 is highest, 4 lowest). Use `dependency add --id ISSUE --depends-on OTHER` to order work. The orchestrator delegates implementation through issues and agent messages; it does not drive Git or bypass the lifecycle.
 

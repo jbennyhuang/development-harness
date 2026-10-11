@@ -113,6 +113,9 @@ def execute(command, args, root, key):
         return worker(command, args)
     if command == "schema":
         return schema()
+    if command == "status":
+        from .store import project_status
+        return project_status(root)
     if command == "instructions":
         return {"instructions": ORCHESTRATOR, "poll_interval": Config.load(root).poll_interval}
     if command == "init":

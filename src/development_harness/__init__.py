@@ -1,6 +1,6 @@
 """A durable, project-local MCP development harness."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def main() -> None:

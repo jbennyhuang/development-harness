@@ -10,7 +10,44 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from .domain import HarnessError, check_transition
+from .domain import HarnessError, Stage, check_transition
+
+
+def project_status(root: Path) -> dict:
+    """Read a journal snapshot without initializing the store or starting a service."""
+    executions, agents, pending = [], [], 0
+    execution = {"enabled": False, "reason": "not_started"}
+    path = root / ".harness" / "journal.sqlite"
+    if path.exists():
+        with contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)) as db:
+            db.execute("BEGIN")
+            version = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+            if not version or version[0] not in ("1", "2"):
+                raise HarnessError("unsupported_schema", "Journal belongs to another schema version; use a compatible installed version")
+            row = db.execute("SELECT value FROM meta WHERE key='execution'").fetchone()
+            if row:
+                execution = json.loads(row[0])
+            executions = [json.loads(row[0]) for row in db.execute("SELECT data FROM objects WHERE kind='execution'")]
+            agents = [json.loads(row[0]) for row in db.execute("SELECT data FROM objects WHERE kind='agent'")]
+            pending = db.execute("SELECT COUNT(*) FROM requests WHERE resolved=0").fetchone()[0]
+    stages = {stage.value: 0 for stage in Stage}
+    for issue in executions:
+        stages[issue["stage"]] = stages.get(issue["stage"], 0) + 1
+    roles = {role: 0 for role in ("developer", "reviewer")}
+    states = {}
+    for agent in agents:
+        roles[agent["role"]] = roles.get(agent["role"], 0) + 1
+        states[agent["state"]] = states.get(agent["state"], 0) + 1
+    return {
+        "project": str(root), "execution": execution,
+        "issues": {"total": len(executions), "by_stage": dict(sorted(stages.items())),
+                   "paused": sum(bool(issue.get("paused")) for issue in executions),
+                   "terminal": sum(issue["stage"] in (Stage.DONE, Stage.CANCELLED) for issue in executions)},
+        "agents": {"total": len(agents), "by_role": dict(sorted(roles.items())),
+                   "by_state": dict(sorted(states.items())),
+                   "locked": sum(bool(agent.get("issue_id")) for agent in agents)},
+        "pending_guidance": pending,
+    }
 
 
 class Store:

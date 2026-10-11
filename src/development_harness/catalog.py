@@ -5,6 +5,7 @@ def arg(type="str", required=False, default=None, help=""):
 
 
 COMMANDS = {
+    "status": ("Summarize durable project execution, issues, agents, and guidance", {}),
     "inspect": ("Inspect host prerequisites and project readiness", {}),
     "init": ("Initialize project configuration and Beads (Git requires explicit consent)", {
         "initialize_git": arg("bool", default=False), "target_branch": arg(),
