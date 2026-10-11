@@ -16,6 +16,7 @@ from acp.schema import (
     TextContentBlock,
 )
 
+from . import __version__
 from .config import Profile
 from .domain import HarnessError
 from .process import process_options, terminate
@@ -91,7 +92,7 @@ class ACPAdapter:
         response = await asyncio.wait_for(
             self.connection.initialize(
                 protocol_version=1, client_capabilities=ClientCapabilities(),
-                client_info=Implementation(name="development-harness", version="0.1.0"),
+                client_info=Implementation(name="development-harness", version=__version__),
             ), 60,
         )
         self.capabilities = response.model_dump(by_alias=True, exclude_none=True)

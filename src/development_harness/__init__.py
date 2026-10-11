@@ -1,4 +1,4 @@
-"""A durable, project-local MCP development harness."""
+"""A durable, project-local CLI development harness."""
 
 __version__ = "0.1.2"
 

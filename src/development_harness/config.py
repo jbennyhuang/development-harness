@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from . import __version__
+
 STATE_DIR = ".harness"
 
 
@@ -25,7 +27,7 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target_branch: str = "main"
     remote: str | None = "origin"
-    image: str = "development-harness-worker:0.1.0"
+    image: str = f"development-harness-worker:{__version__}"
     max_agents: int = Field(default=4, ge=2, le=128)
     developers: int = Field(default=2, ge=1)
     reviewers: int = Field(default=2, ge=1)

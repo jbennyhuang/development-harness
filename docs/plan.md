@@ -1,6 +1,6 @@
 # Development Harness CLI Plan
 
-Status: Implementation approved by the developer; architecture and operational policies recorded.
+Status: First CLI implementation completed on Windows, with real Codex development and Antigravity review. The harness used its own lifecycle to add a status feature and worker-boundary hardening. See [verification evidence and remaining limits](verification.md).
 
 Latest interface decision (2026-10-11): Deliver an installable CLI executable, not an MCP server. This replaces both the original MCP interface and the subsequent FastMCP choice. The orchestrator controls the harness through CLI commands and polls structured JSON results; ACP remains the protocol for dispatching coding agents.
 
