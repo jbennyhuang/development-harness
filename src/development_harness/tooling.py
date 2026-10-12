@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import importlib.resources
 import os
 import uuid
 from pathlib import Path
 
-from .adapters import AcpAgentAdapter, LaunchContext, resolve_adapter_factory
+from .adapters import LaunchContext, close_session, initialize, resolve_adapter_factory, shield_cleanup
+from .adapters import session as open_session
 from .adapters.antigravity import login as login
 from .backend import Docker
 from .config import Config
 from .domain import HarnessError
 from .git import Git
-from .json_types import JSONObject, json_value, string
+from .json_types import JSONObject, json_object, json_value, string
 from .process import run
 
 
@@ -80,20 +81,30 @@ async def probe(root: Path, profile_name: str, session: bool) -> JSONObject:
     id = "probe-" + uuid.uuid4().hex
     profile = config.profiles[profile_name]
     diagnostics: list[JSONObject] = []
-    adapter: AcpAgentAdapter = resolve_adapter_factory(profile.provider)(profile, lambda data: diagnostics.append(data) if len(diagnostics) < 20 else None)
+    factory = resolve_adapter_factory(profile.provider)
+    caps: JSONObject = {}
+    session_id = ""
     try:
         work = await git.prepare(id)
         await backend.prepare(id, await git.bundle(id), string(work["branch"]))
-        caps = await adapter.start(LaunchContext(backend, id, {}))
+        async with factory(profile, lambda data: diagnostics.append(data) if len(diagnostics) < 20 else None, LaunchContext(backend, id, {})) as agent:
+            response = await initialize(agent)
+            caps = json_object(response.model_dump(by_alias=True, exclude_none=True))
+            if session:
+                session_id, _ = await open_session(agent, profile, response, "/workspace", None, lambda data: None)
+                with contextlib.suppress(Exception):
+                    await close_session(agent, response, session_id)
         result: JSONObject = {"profile": profile_name, "capabilities": caps, "prompt_verified": False}
         if session:
-            session_id, _ = await asyncio.wait_for(adapter.session(None), 45)
             result["session_created"] = bool(session_id)
         return result
     except Exception as exc:
-        raise HarnessError("provider_probe_failed", str(exc), capabilities=adapter.capabilities,
+        raise HarnessError("provider_probe_failed", str(exc), capabilities=caps,
                            diagnostics=json_value(diagnostics), prompt_verified=False) from exc
     finally:
-        await adapter.close()
-        await backend.cleanup(id)
-        await git.cleanup(id)
+        async def cleanup() -> None:
+            try:
+                await backend.cleanup(id)
+            finally:
+                await git.cleanup(id)
+        await shield_cleanup(cleanup())

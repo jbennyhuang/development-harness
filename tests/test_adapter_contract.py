@@ -1,19 +1,16 @@
 import pytest
-from adapter_contract import ThirdPartyAdapter, subclass_contract
+from adapter_contract import third_party_factory
 from conftest import advance
 
-from development_harness.adapters import ADAPTERS, AcpAgentAdapter, Antigravity, Codex
+from development_harness.adapters import ADAPTERS
 from development_harness.config import Config, Profile
 from development_harness.domain import HarnessError
 
 
-async def test_engine_runs_subclass_third_party_adapter_and_retains_context(engine, monkeypatch):
+async def test_engine_runs_independent_third_party_agent_factory_and_retains_context(engine, monkeypatch):
     instances = []
 
-    def factory(profile, emit):
-        adapter = ThirdPartyAdapter(engine, profile, emit)
-        instances.append(adapter)
-        return subclass_contract(adapter)
+    factory = third_party_factory(engine, instances)
 
     monkeypatch.setitem(ADAPTERS, "third-party", factory)
     engine.config.profiles["codex"] = Profile(provider="third-party", command=["custom-worker"])
@@ -26,14 +23,14 @@ async def test_engine_runs_subclass_third_party_adapter_and_retains_context(engi
     await engine.sync_issues()
     await advance(engine, lambda: engine.store.require("execution", issue["id"])["paused"])
     adapter = instances[0]
-    assert isinstance(adapter, AcpAgentAdapter)
     assert adapter.closed and adapter.prompts and adapter.restores == [None]
+    assert engine.store.execution_state()["enabled"]
     assert adapter.context.issue_id == issue["id"]
     assert issue["id"] in engine.backend.stopped
     execution = engine.store.require("execution", issue["id"])
     agent = engine.store.require("agent", execution["developer"])
     assert agent["session_id"] == "third-party-session"
-    assert agent["capabilities"] == {"provider": "third-party"}
+    assert agent["capabilities"]["protocolVersion"] == 1
     assert agent["credential_hash"] is None
     assert engine.store.get("transcript", agent["id"] + ":" + issue["id"])
 
@@ -73,31 +70,22 @@ async def test_mutated_unregistered_provider_rejected_before_binding_or_dispatch
     assert not any(update["type"] == "agent.assigned" for update in engine.store.poll("typo")["updates"])
 
 
-def test_abstract_provider_hook_is_required():
-    from inspect import isabstract
 
-    assert isabstract(AcpAgentAdapter)
-    with pytest.raises(TypeError, match="setup"):
-        AcpAgentAdapter(Profile(command=["unused"]), lambda update: None)
-    assert issubclass(Codex, AcpAgentAdapter)
-    assert issubclass(Antigravity, AcpAgentAdapter)
-    assert not isabstract(Codex) and not isabstract(Antigravity)
-
-
-def test_pyright_rejects_wrong_provider_override(tmp_path):
+def test_pyright_rejects_nonconforming_provider_and_agent(tmp_path):
     import json
     import subprocess
 
-    fixture = tmp_path / "bad_adapter.py"
+    fixture = tmp_path / "bad_provider.py"
     fixture.write_text("""
-from typing import override
-from development_harness.adapters import AcpAgentAdapter
-class WrongAdapter(AcpAgentAdapter):
-    @override
-    async def setup(self, context: int) -> str:
+from acp import Agent
+from development_harness.adapters import AdapterFactory
+class WrongAgent:
+    async def prompt(self, session_id: int) -> str:
         return "invalid"
+agent: Agent = WrongAgent()
+factory: AdapterFactory = lambda profile, emit, context: WrongAgent()
 """)
     result = subprocess.run(["pyright", "--outputjson", str(fixture)], capture_output=True, text=True)
     diagnostics = json.loads(result.stdout)["generalDiagnostics"]
     assert result.returncode == 1
-    assert any(item.get("rule") == "reportIncompatibleMethodOverride" for item in diagnostics)
+    assert sum(item.get("rule") == "reportAssignmentType" for item in diagnostics) >= 2

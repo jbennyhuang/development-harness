@@ -1,75 +1,98 @@
-"""Strict-checked third-party ABC extension, including its own constructor/members."""
-from typing import override
+"""Strict structural SDK contracts, independent of project provider classes."""
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
+from typing import AsyncContextManager, Never
 
-from acp import Client
+from acp import Agent, Client, RequestError
+from acp.schema import (
+    AgentCapabilities,
+    InitializeResponse,
+    LoadSessionResponse,
+    NewSessionResponse,
+    PromptResponse,
+)
 
-from development_harness.adapters import AcpAgentAdapter, Emit, LaunchContext, Update
+from development_harness.adapters import AdapterFactory, Emit, LaunchContext
+from development_harness.adapters.antigravity import Antigravity
+from development_harness.adapters.codex import Codex
 from development_harness.config import Profile
 from development_harness.engine import Engine
+from development_harness.json_types import JSONObject
 
 
-class ThirdPartyAdapter(AcpAgentAdapter):
-    def __init__(self, engine: Engine, profile: Profile, emit: Emit) -> None:
-        super().__init__(profile, emit)
-        self.engine, self.emit = engine, emit
-        self.capabilities: Update = {"provider": "third-party"}
-        self.context: LaunchContext | None = None
+class ThirdPartyAgent:
+    def __init__(self, engine: Engine, emit: Emit, context: LaunchContext) -> None:
+        self.engine, self.emit, self.context = engine, emit, context
         self.closed = False
         self.prompts: list[str] = []
         self.restores: list[str | None] = []
 
-    @override
-    async def setup(self, context: LaunchContext) -> list[str]:
-        return ["third-party-worker"]
+    async def initialize(self, *args: object, **kwargs: object) -> InitializeResponse:
+        return InitializeResponse(protocol_version=1, agent_capabilities=AgentCapabilities(load_session=True))
 
-    @override
-    async def start(self, context: LaunchContext) -> Update:
-        self.context = context
-        return self.capabilities
+    async def new_session(self, *args: object, **kwargs: object) -> NewSessionResponse:
+        self.restores.append(None)
+        return NewSessionResponse(session_id="third-party-session")
 
-    @override
-    async def authenticate(self, method_id: str, timeout: int = 60) -> None:
+    async def load_session(self, cwd: str, session_id: str, *args: object, **kwargs: object) -> LoadSessionResponse:
+        self.restores.append(session_id)
+        return LoadSessionResponse()
+
+    async def authenticate(self, *args: object, **kwargs: object) -> None:
         pass
 
-    @override
-    async def session(self, existing: str | None, history: str = "") -> tuple[str, bool]:
-        self.restores.append(existing)
-        return existing or "third-party-session", bool(existing)
+    set_session_mode = authenticate
+    set_config_option = authenticate
+    close_session = authenticate
+    cancel = authenticate
 
-    @override
-    async def prompt(self, session_id: str, text: str, timeout: int) -> Update:
-        assert self.context is not None
-        self.prompts.append(text)
+    async def prompt(self, session_id: str, prompt: object, **kwargs: object) -> PromptResponse:
+        self.prompts.append(str(prompt))
         self.emit({"session_id": session_id, "update": {
-            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Need input"},
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Explain how usage limits work"},
         }})
         self.engine.submit(self.context.env["HARNESS_WORKER_TOKEN"], {
             "kind": "guidance", "summary": "Choose the expected output format",
         })
-        return {"stopReason": "end_turn"}
+        return PromptResponse(stop_reason="end_turn")
 
-    @override
-    async def cancel(self, session_id: str) -> None:
+    async def unsupported(self, *args: object, **kwargs: object) -> Never:
+        raise RequestError.method_not_found("Unsupported")
+
+    list_sessions = unsupported
+    fork_session = unsupported
+    resume_session = unsupported
+
+    async def ext_method(self, method: str, params: Mapping[str, object]) -> JSONObject:
+        raise RequestError.method_not_found(method)
+
+    async def ext_notification(self, method: str, params: Mapping[str, object]) -> None:
         pass
 
-    @override
-    async def close_session(self, session_id: str) -> None:
+    def on_connect(self, conn: Client) -> None:
         pass
 
-    @override
-    async def close(self) -> None:
-        self.closed = True
+
+@asynccontextmanager
+async def third_party_provider(engine: Engine, instances: list[ThirdPartyAgent], profile: Profile,
+                               emit: Emit, context: LaunchContext) -> AsyncGenerator[Agent]:
+    agent = ThirdPartyAgent(engine, emit, context)
+    instances.append(agent)
+    try:
+        yield agent
+    finally:
+        agent.closed = True
 
 
-def subclass_contract(adapter: ThirdPartyAdapter) -> AcpAgentAdapter:
-    return adapter
+def factory_contract(factory: AdapterFactory) -> AdapterFactory:
+    return factory
 
 
-def retains_subclass_members(adapter: ThirdPartyAdapter) -> list[str]:
-    engine: Engine = adapter.engine
-    assert engine is adapter.engine
-    return adapter.prompts
+def sdk_client_contract(codex: Codex, antigravity: Antigravity) -> tuple[Client, Client]:
+    return codex, antigravity
 
 
-def sdk_client_contract(adapter: AcpAgentAdapter) -> Client:
-    return adapter
+def third_party_factory(engine: Engine, instances: list[ThirdPartyAgent]) -> AdapterFactory:
+    def factory(profile: Profile, emit: Emit, context: LaunchContext) -> AsyncContextManager[Agent]:
+        return third_party_provider(engine, instances, profile, emit, context)
+    return factory

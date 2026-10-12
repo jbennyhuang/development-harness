@@ -1,6 +1,6 @@
 import asyncio
 
-from conftest import FixtureAdapter, advance
+from conftest import FixtureAdapter, advance, fixture_provider
 
 from development_harness.domain import Stage
 
@@ -10,13 +10,13 @@ async def test_development_and_review_are_concurrent_across_issues(engine):
     engine.config.developers = engine.config.reviewers = 2
     hold = asyncio.Event()
     class Controlled(FixtureAdapter):
-        async def prompt(self, session_id, text, timeout):
+        async def prompt(self, session_id, prompt):
             assignment = self.engine.worker_assignment(self.env["HARNESS_WORKER_TOKEN"])
             e = assignment["execution"]
             if e["id"] == "issue-b" or e["stage"] == Stage.REVIEWING:
                 await hold.wait()
-            return await super().prompt(session_id, text, timeout)
-    engine.adapter_factory = lambda profile, emit: Controlled(engine, profile, emit)
+            return await super().prompt(session_id, prompt)
+    engine.adapter_factory = lambda profile, emit, context: fixture_provider(Controlled(engine, profile, emit), context)
     await engine.tracker.create(key="a")
     await engine.tracker.create(key="b")
     engine.ensure_pool()

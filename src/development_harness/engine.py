@@ -8,12 +8,18 @@ import secrets
 import time
 import uuid
 from pathlib import Path
+from typing import AsyncContextManager
+
+from acp import Agent
+from acp.schema import InitializeResponse, TextContentBlock
 
 from .adapters import (
-    AcpAgentAdapter,
     AdapterFactory,
     LaunchContext,
+    close_session,
+    initialize,
     resolve_adapter_factory,
+    session,
     usage_exhausted,
 )
 from .backend import Backend, Docker
@@ -49,7 +55,7 @@ class Engine:
         self.git = git or Git(root, config.target_branch, config.remote)
         self.adapter_factory = adapter_factory
         self.tasks: dict[str, asyncio.Task[None]] = {}
-        self.adapters: dict[str, AcpAgentAdapter] = {}
+        self.adapters: dict[str, Agent] = {}
         self.integration_issue: str | None = None
         self.worker_url = ""
         self.stopping = False
@@ -137,7 +143,8 @@ class Engine:
         for a in self.agents():
             if optional_string(a.get("issue_id")) == id and string(a["id"]) in self.adapters:
                 adapter = self.adapters[string(a["id"])]
-                await adapter.cancel(optional_string(a.get("session_id")) or "")
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(adapter.cancel(session_id=optional_string(a.get("session_id")) or ""), 5)
         await self.backend.quiesce(id)
 
     async def pause_project(self, reason: str, message: str) -> JSONObject:
@@ -408,17 +415,23 @@ class Engine:
                 self.store.emit("agent.response", {"session": optional_string(data.get("session_id")), "content": update.get("content")}, id, string(a["id"]))
 
         factory = self.adapter_factory or registered_factory
-        adapter: AcpAgentAdapter | None = None
+        manager: AsyncContextManager[Agent] | None = None
+        adapter: Agent | None = None
+        capabilities: InitializeResponse | None = None
+        session_id: str | None = None
+        prompt_active = False
+        exit_error: BaseException | None = None
         env = {"HARNESS_WORKER_TOKEN": token, "HARNESS_WORKER_URL": self.worker_url}
         try:
-            adapter = factory(profile, emit)
-            self.adapters[string(a["id"])] = adapter
             await self.backend.prepare(id, await self.git.bundle(id), string(e["branch"]))
-            capabilities = await adapter.start(LaunchContext(self.backend, id, env))
+            manager = factory(profile, emit, LaunchContext(self.backend, id, env))
+            adapter = await manager.__aenter__()
+            self.adapters[string(a["id"])] = adapter
+            capabilities = await initialize(adapter)
             current = self.store.require("agent", string(a["id"]))
-            current["capabilities"] = capabilities
+            current["capabilities"] = json_object(capabilities.model_dump(by_alias=True, exclude_none=True))
             self.store.put("agent", string(a["id"]), current)
-            session_id, restored = await adapter.session(optional_string(a.get("session_id")))
+            session_id, restored = await session(adapter, profile, capabilities, "/workspace", optional_string(a.get("session_id")), emit)
             current = self.store.require("agent", string(a["id"]))
             current["session_id"] = session_id
             self.store.put("agent", string(a["id"]), current)
@@ -433,13 +446,23 @@ class Engine:
             current["messages"] = array(current["messages"])[len(array(a.get("messages", []))):]
             self.store.put("agent", string(a["id"]), current)
             emit({"role": "user", "text": text})
-            await adapter.prompt(session_id, text, self.config.agent_timeout)
+            try:
+                prompt_active = True
+                await asyncio.wait_for(adapter.prompt(session_id=session_id, prompt=[TextContentBlock(type="text", text=text)]), self.config.agent_timeout)
+            except Exception as exc:
+                if usage_exhausted(str(exc)):
+                    raise HarnessError("provider_usage_exhausted", "Provider usage limit reached") from exc
+                raise
+            prompt_active = False
             if quota:
                 raise HarnessError("provider_usage_exhausted", "Provider usage limit reached")
             current = self.store.require("agent", string(a["id"]))
             result = current.get("result")
             if not result:
                 raise HarnessError("missing_submission", "Agent ended its turn without submitting a result")
+        except BaseException as exc:
+            exit_error = exc
+            raise
         finally:
             current = self.store.require("agent", string(a["id"]))
             if optional_string(current.get("issue_id")) == id:
@@ -448,8 +471,19 @@ class Engine:
 
             async def teardown() -> None:
                 try:
-                    if adapter is not None:
-                        await adapter.close()
+                    try:
+                        if adapter is not None and capabilities is not None and session_id is not None:
+                            if prompt_active:
+                                with contextlib.suppress(Exception):
+                                    await asyncio.wait_for(adapter.cancel(session_id=session_id), 5)
+                            with contextlib.suppress(Exception):
+                                await close_session(adapter, capabilities, session_id)
+                    finally:
+                        if manager is not None and adapter is not None:
+                            await manager.__aexit__(
+                                type(exit_error) if exit_error is not None else None,
+                                exit_error, exit_error.__traceback__ if exit_error is not None else None,
+                            )
                 finally:
                     self.adapters.pop(string(a["id"]), None)
                     await self.backend.quiesce(id)

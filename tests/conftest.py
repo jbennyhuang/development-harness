@@ -1,8 +1,15 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
+from acp.schema import (
+    AgentCapabilities,
+    InitializeResponse,
+    LoadSessionResponse,
+    NewSessionResponse,
+    PromptResponse,
+)
 
-from development_harness.adapters import AcpAgentAdapter
 from development_harness.config import Config
 from development_harness.engine import Engine
 from development_harness.git import Git
@@ -104,36 +111,36 @@ class IsolatedTestBackend:
         return [id]
 
 
-class FixtureAdapter(AcpAgentAdapter):
+class FixtureAdapter:
     def __init__(self, engine, profile, emit):
-        super().__init__(profile, emit)
+        self.profile = profile
         self.engine, self.emit = engine, emit
         self.env = {}
         self.session_calls = []
 
     capabilities = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
 
-    async def authenticate(self, method_id, timeout=60):
+    async def initialize(self, **kwargs):
+        return InitializeResponse(protocol_version=1, agent_capabilities=AgentCapabilities(load_session=True))
+
+    async def new_session(self, **kwargs):
+        self.session_calls.append(None)
+        return NewSessionResponse(session_id="fixture-session")
+
+    async def load_session(self, session_id, **kwargs):
+        self.session_calls.append(session_id)
+        return LoadSessionResponse()
+
+    async def authenticate(self, **kwargs):
         pass
 
-    async def close_session(self, session_id):
+    async def set_session_mode(self, **kwargs):
         pass
 
-    async def setup(self, context):
-        return []
+    async def set_config_option(self, **kwargs):
+        pass
 
-    async def start(self, context):
-        return await self.connect([], context.env)
-
-    async def connect(self, command, env):
-        self.env = env
-        return {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
-
-    async def session(self, existing, history=""):
-        self.session_calls.append(existing)
-        return existing or "fixture-session", bool(existing)
-
-    async def prompt(self, session_id, text, timeout):
+    async def prompt(self, session_id, prompt):
         assignment = self.engine.worker_assignment(self.env["HARNESS_WORKER_TOKEN"])
         e = assignment["execution"]
         git = Git(self.engine.backend.path(e["id"]))
@@ -152,13 +159,22 @@ class FixtureAdapter(AcpAgentAdapter):
             result = {"kind": "merge", "verdict": "approved", "base": base,
                       "commit": await git.oid("HEAD"), "summary": "Prepared and reviewed"}
         self.engine.submit(self.env["HARNESS_WORKER_TOKEN"], result)
-        return {}
+        return PromptResponse(stop_reason="end_turn")
 
     async def close(self):
         pass
 
     async def cancel(self, session_id):
         pass
+
+
+@asynccontextmanager
+async def fixture_provider(agent, context):
+    agent.env = context.env
+    try:
+        yield agent
+    finally:
+        await agent.close()
 
 
 @pytest.fixture
@@ -170,7 +186,7 @@ async def engine(repo):
     backend = IsolatedTestBackend(root, config)
     store = Store(root / ".harness" / "journal.sqlite")
     e = Engine(root, config, store, tracker, backend, git)
-    e.adapter_factory = lambda profile, emit: FixtureAdapter(e, profile, emit)
+    e.adapter_factory = lambda profile, emit, context: fixture_provider(FixtureAdapter(e, profile, emit), context)
     yield e
     await e.close()
     store.close()

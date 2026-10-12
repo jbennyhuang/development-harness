@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.5-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.6-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -112,62 +112,39 @@ The ordinary suite uses controlled provider fixtures plus real Git and real CLI/
 At every ACP turn boundary the host revokes the scoped credential, closes the adapter, and stops the issue container before exporting or applying a result. Export briefly restarts only the inert container and stops it again. Errors and cancellations also stop residual commands while retaining files, issue locks, sessions, transcripts, and submitted evidence for retry. Credentials authorize only the currently bound role and workflow stage.
 
 
-## Adapter package and extension
+## SDK Agent providers and extension
 
-`src/development_harness/adapters/__init__.py` contains the abstract
-`AcpAgentAdapter` base, incoming ACP callbacks and outgoing lifecycle, `LaunchContext`, typed
-`AdapterFactory`, and `ADAPTERS` registry. `Codex` in `codex.py` and `Antigravity`
-in `antigravity.py` subclass the base and own launch defaults and credential setup.
-Antigravity also owns the native OAuth bootstrap. `GenericACPAdapter` supports
-configured ACP commands; `ACPAdapter`, `CodexAdapter`, and `AntigravityAdapter`
-remain compatibility aliases. `CodingHarnessAdapter` is a secondary alias for
-`AcpAgentAdapter` for existing imports.
+`adapters/__init__.py` defines `LaunchContext`, JSON/update aliases, the typed
+provider registry, and ordinary orchestration helpers accepting `acp.Agent`.
+The Engine stores SDK Agent proxies and calls SDK initialize, authenticate,
+new_session/load_session, set_session_mode, set_config_option, prompt and cancel.
+Initialization occurs once per connection with stable ACP v1 and empty client
+capabilities. Session restoration falls back only for a missing session; configured
+authentication, mode and model use bounded SDK requests. Recorded issue history
+is included when native restoration is unavailable.
 
-The adapter itself receives SDK session updates, permission requests, and extension
-notifications through its instance emitter. It selects an offered allow option
-inside the issue container, rejects unadvertised filesystem, terminal and
-elicitation requests, and reports unsupported extensions without echoing values.
-The same object is passed to the SDK connection; there is no separate callback helper.
+Codex and Antigravity independently implement SDK Client callbacks and own their
+stdio transport/process lifecycle. Generic command support has its own client.
+Their managed contexts yield the actual SDK Agent connection, while callback
+receivers remain separate from Agent proxies. Each emitter is instance-local;
+permission selection stays inside the issue container, unadvertised capabilities
+are rejected, and unsupported extension diagnostics expose parameter keys only.
+Antigravity also retains managed native OAuth login and restricted native cache ACLs.
 
-The public lifecycle is `start(context)`, `authenticate(method_id, timeout=60)`,
-`session(existing, history="") -> (session_id, restored)`,
-`prompt(session_id, text, timeout)`, `cancel(session_id)`,
-`close_session(session_id)`, and `close()`. The base stores negotiated
-`capabilities`; `start` returns them and `prompt` returns the provider result.
-Startup calls the abstract `setup(context)` hook, then connects with ACP v1.
-Session setup authenticates when configured, attempts native restoration when
-advertised, and selects mode/model. The engine supplies recorded history in the
-next prompt when native restoration is unavailable. Session close is conditional
-on advertised support; transport cancellation and close are bounded. The engine
-closes transports at turn boundaries while retaining issue sessions.
+A provider factory accepts `(Profile, Emit, LaunchContext)` and returns
+`AsyncContextManager[acp.Agent]`. Register it in `ADAPTERS` before validating a
+profile, or inject it through `Engine(adapter_factory=...)`. Third-party providers
+need no project inheritance: they can implement SDK Client callbacks and yield
+`connect_to_agent(client, writer, reader)` from their own async context manager.
+Unknown providers fail before pool, generation, credential or workspace mutation.
 
-To add an ACP provider, subclass the base and implement one typed hook:
-
-```python
-from typing import override
-from development_harness.adapters import ADAPTERS, AcpAgentAdapter, LaunchContext
-
-class CustomAgent(AcpAgentAdapter):
-    @override
-    async def setup(self, context: LaunchContext) -> list[str]:
-        await context.backend.credentials(context.issue_id, self.profile)
-        return context.backend.agent_command(context.issue_id, self.profile, context.env)
-
-ADAPTERS["custom"] = CustomAgent
-```
-
-Register before constructing a `Profile(provider="custom", command=[...])`.
-Subclasses may define their own constructors and members; a registry factory must
-accept `(Profile, Emit)` and return an `AcpAgentAdapter`. An embedding
-application can also inject `Engine(adapter_factory=...)`. Unregistered keys
-raise `unknown_provider` during configuration validation and before pool creation,
-binding, or dispatch, including profiles mutated after validation.
-
-Pyright checks every production module and the subclass conformance fixture in
-strict mode. Recursive JSON values and runtime narrowing contain journal, HTTP,
-CLI and SDK data at their boundaries. Add subclass contract and lifecycle tests;
-run Ruff, Pyright, pytest, lock validation and package builds. The contract tests
-also verify that incompatible provider overrides are rejected by Pyright.
+The backend owns isolation, credential copies and fenced launch commands. Engine
+teardown synchronously revokes the worker credential, then shields transport
+closure and backend quiescence against repeated cancellation before integration.
+Provider errors, stderr and explicit notices can pause all work for usage limits;
+normal response text never triggers that policy. Strict Pyright checks production
+and a structural third-party Agent factory, with negative contract tests. Validation
+includes Ruff, Pyright, pytest, lock checks and wheel/sdist builds.
 
 `LaunchContext` contains the prepared issue's backend, issue ID, scoped environment,
 and workspace. Adapters use `Backend.credentials` for explicitly selected credential

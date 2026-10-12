@@ -180,7 +180,7 @@ async def test_credentials_reject_broken_assignment(engine, mutation):
 
 @pytest.mark.parametrize("outcome", ["submitted", "missing", "provider", "cancel", "quota"])
 async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, outcome):
-    from conftest import FixtureAdapter
+    from conftest import FixtureAdapter, fixture_provider
 
     id = await start(engine)
     await engine.tick()
@@ -191,7 +191,7 @@ async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, ou
     token = None
 
     class Controlled(FixtureAdapter):
-        async def prompt(self, session_id, text, timeout):
+        async def prompt(self, session_id, prompt):
             nonlocal token
             token = self.env["HARNESS_WORKER_TOKEN"]
             (engine.backend.path(id) / "uncommitted.txt").write_text("preserved")
@@ -204,7 +204,7 @@ async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, ou
                 self.emit({"provider_usage_exhausted": True})
                 await asyncio.Event().wait()
             if outcome == "submitted":
-                await super().prompt(session_id, text, timeout)
+                await super().prompt(session_id, prompt)
 
         async def close(self):
             with pytest.raises(HarnessError):
@@ -220,7 +220,7 @@ async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, ou
         events.append("apply")
     engine.backend.quiesce = stop
     engine.apply_result = apply
-    engine.adapter_factory = lambda profile, emit: Controlled(engine, profile, emit)
+    engine.adapter_factory = lambda profile, emit, context: fixture_provider(Controlled(engine, profile, emit), context)
     task = asyncio.create_task(engine.agent_turn(id, Stage.DEVELOPING))
     engine.tasks[id] = task
     await asyncio.wait_for(entered.wait(), 5)
@@ -239,7 +239,7 @@ async def test_turn_revokes_closes_and_quiesces_before_apply_or_retry(engine, ou
 
 
 async def test_repeated_cancellation_waits_for_quiescence_before_retry(engine):
-    from conftest import FixtureAdapter
+    from conftest import FixtureAdapter, fixture_provider
 
     id = await start(engine)
     await engine.tick()
@@ -249,7 +249,7 @@ async def test_repeated_cancellation_waits_for_quiescence_before_retry(engine):
     closes = 0
 
     class Controlled(FixtureAdapter):
-        async def prompt(self, *args):
+        async def prompt(self, *args, **kwargs):
             prompted.set()
             await asyncio.Event().wait()
 
@@ -263,7 +263,7 @@ async def test_repeated_cancellation_waits_for_quiescence_before_retry(engine):
         engine.backend.stopped.append(issue)
 
     engine.backend.quiesce = stop
-    engine.adapter_factory = lambda profile, emit: Controlled(engine, profile, emit)
+    engine.adapter_factory = lambda profile, emit, context: fixture_provider(Controlled(engine, profile, emit), context)
     task = asyncio.create_task(engine.agent_turn(id, Stage.DEVELOPING))
     await asyncio.wait_for(prompted.wait(), 5)
     task.cancel()

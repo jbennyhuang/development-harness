@@ -7,10 +7,14 @@ def send(value):
     print(json.dumps({"jsonrpc": "2.0", **value}), flush=True)
 
 
+initializations = 0
 for line in sys.stdin:
     request = json.loads(line)
     method, id = request.get("method"), request.get("id")
     if method == "initialize":
+        initializations += 1
+        assert initializations == 1
+        assert request["params"]["protocolVersion"] == 1
         assert request["params"].get("clientCapabilities", {}) == {}
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"close": {}}},
                   "agentInfo": {"name": "protocol-fixture", "version": "1"}, "authMethods": []}
@@ -64,4 +68,7 @@ for line in sys.stdin:
     else:
         send({"id": id, "error": {"code": -32601, "message": "Method not found"}})
         continue
-    send({"id": id, "result": result})
+    if len(sys.argv) > 1 and method == sys.argv[1]:
+        send({"id": id, "error": {"code": -32603, "message": "fixture startup or prompt failure"}})
+    else:
+        send({"id": id, "result": result})

@@ -452,44 +452,36 @@ Documentation was consulted during planning on 2026-10-11. Compatibility and cap
 
 
 
-### Selected adapter architecture (0.1.5)
+### SDK Agent architecture (0.1.6)
 
-`AcpAgentAdapter` is an abstract base class in `adapters/__init__.py`.
-The same adapter receives incoming ACP callbacks and manages the outgoing ACP
-lifecycle, passing itself to the SDK connection. Session updates and extension
-notifications use its instance emitter; permission selection stays inside issue
-containers. Unadvertised filesystem, terminal and elicitation requests return
-request errors, and unsupported extensions emit parameter keys only.
-That module also contains `LaunchContext`, public JSON/update
-and factory types, and the live registry. `Codex` and `Antigravity` subclass the
-base, implement `setup(LaunchContext) -> list[str]` with `typing.override`, and
-retain their provider defaults and credential launch integration. Antigravity
-retains native OAuth bootstrap. `GenericACPAdapter` supports generic ACP profiles;
-the old concrete adapter names remain aliases, and `CodingHarnessAdapter` is a
-secondary compatibility alias for the new base. No implements decorator is used.
+`adapters/__init__.py` defines `LaunchContext`, JSON/update aliases, the typed
+provider registry, and ordinary orchestration helpers accepting `acp.Agent`.
+The Engine stores SDK Agent proxies and calls SDK initialize, authenticate,
+new_session/load_session, set_session_mode, set_config_option, prompt and cancel.
+Initialization occurs once per connection with stable ACP v1 and empty client
+capabilities. Session restoration falls back only for a missing session; configured
+authentication, mode and model use bounded SDK requests. Recorded issue history
+is included when native restoration is unavailable.
 
-The base starts an isolated ACP connection after the provider setup hook,
-negotiates v1 and capabilities, authenticates when configured, creates/restores
-sessions with missing-session fallback, selects mode/model, prompts, cancels,
-conditionally closes sessions and performs bounded transport shutdown. The engine
-retains transcript fallback and global quota handling. The backend retains fenced
-credential copies/environment and all container ownership/isolation/resource/Git
-transport policy. Engine teardown revokes scoped worker credentials before
-cancellation-shielded transport close and container quiescence, preserving files
-and issue context. Request scope, generation checks, journal transactions and
-scheduler transitions remain unchanged.
+Codex and Antigravity independently implement SDK Client callbacks and own their
+stdio transport/process lifecycle. Generic command support has its own client.
+Their managed contexts yield the actual SDK Agent connection, while callback
+receivers remain separate from Agent proxies. Each emitter is instance-local;
+permission selection stays inside the issue container, unadvertised capabilities
+are rejected, and unsupported extension diagnostics expose parameter keys only.
+Antigravity also retains managed native OAuth login and restricted native cache ACLs.
 
-Extensions subclass the ABC and implement the setup hook, then register a
-`(Profile, Emit) -> AcpAgentAdapter` factory before validating a profile.
-They may retain their own constructor and members and inherit the ACP lifecycle;
-no scheduler changes are required. Registry validation rejects unknown provider
-keys before pool creation, binding or dispatch, including mutated profiles.
-See the README for a complete extension recipe and the public lifecycle signatures.
+A provider factory accepts `(Profile, Emit, LaunchContext)` and returns
+`AsyncContextManager[acp.Agent]`. Register it in `ADAPTERS` before validating a
+profile, or inject it through `Engine(adapter_factory=...)`. Third-party providers
+need no project inheritance: they can implement SDK Client callbacks and yield
+`connect_to_agent(client, writer, reader)` from their own async context manager.
+Unknown providers fail before pool, generation, credential or workspace mutation.
 
-Pyright checks all `src` in strict mode plus the adapter subclass fixture, using
-the locked uv dependency. Typed recursive JSON validation and narrowing contain
-external SDK, SQLite, HTTP and CLI inputs. Contract coverage includes abstract
-construction, concrete inheritance, a third-party subclass through the engine,
-and rejection of incompatible overrides. CI uses Pyright, Ruff, pytest and package
-builds on both platforms. No automatic self-update is introduced; live provider
-and host verification remains separate from controlled regression evidence.
+The backend owns isolation, credential copies and fenced launch commands. Engine
+teardown synchronously revokes the worker credential, then shields transport
+closure and backend quiescence against repeated cancellation before integration.
+Provider errors, stderr and explicit notices can pause all work for usage limits;
+normal response text never triggers that policy. Strict Pyright checks production
+and a structural third-party Agent factory, with negative contract tests. Validation
+includes Ruff, Pyright, pytest, lock checks and wheel/sdist builds.
