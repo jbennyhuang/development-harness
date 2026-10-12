@@ -25,8 +25,8 @@ def request(info, path, body=None, timeout=30):
     if not url.startswith("http://127.0.0.1:"):
         raise HarnessError("invalid_service", "Service must be on host loopback")
     with httpx.Client(trust_env=False, timeout=timeout) as client:
-        kwargs = {"headers": {"Authorization": "Bearer " + info["token"]}}
-        response = client.get(url + path, **kwargs) if body is None else client.post(url + path, json=body, **kwargs)
+        headers = {"Authorization": "Bearer " + info["token"]}
+        response = client.get(url + path, headers=headers) if body is None else client.post(url + path, json=body, headers=headers)
         envelope = response.json()
         if not envelope["ok"]:
             error = envelope["error"]

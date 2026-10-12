@@ -11,11 +11,19 @@ for line in sys.stdin:
     request = json.loads(line)
     method, id = request.get("method"), request.get("id")
     if method == "initialize":
-        result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True},
+        result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"close": {}}},
                   "agentInfo": {"name": "protocol-fixture", "version": "1"}, "authMethods": []}
     elif method == "session/new":
         result = {"sessionId": "fixture-session", "modes": {"currentModeId": "full",
                   "availableModes": [{"id": "full", "name": "Full container permissions"}]}}
+    elif method == "authenticate":
+        assert request["params"]["methodId"] == "fixture-auth"
+        result = {}
+    elif method == "session/load" and request["params"]["sessionId"] == "saved-session":
+        result = {}
+    elif method == "session/load" and request["params"]["sessionId"] == "denied-session":
+        send({"id": id, "error": {"code": -32603, "message": "Authentication denied"}})
+        continue
     elif method == "session/load":
         send({"id": id, "error": {"code": -32602, "message": "Session not found"}})
         continue
@@ -30,6 +38,13 @@ for line in sys.stdin:
             raise RuntimeError("Permission response was not valid")
         result = {"stopReason": "end_turn"}
     elif method == "session/set_mode":
+        assert request["params"]["modeId"] == "full"
+        result = {}
+    elif method == "session/set_config_option":
+        assert request["params"]["configId"] == "model"
+        assert request["params"]["value"] == "fixture-model"
+        result = {"configOptions": []}
+    elif method == "session/close":
         result = {}
     elif method == "session/cancel":
         continue

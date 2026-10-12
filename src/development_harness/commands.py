@@ -5,6 +5,7 @@ import shutil
 import time
 import uuid
 
+from .backend import Docker
 from .catalog import COMMANDS, schema
 from .config import Config
 from .domain import HarnessError, Stage
@@ -12,6 +13,7 @@ from .engine import POST_MERGE, TERMINAL, Engine
 from .git import Git
 from .instructions import ORCHESTRATOR
 from .process import run
+from .tracker import Beads
 
 
 def public_agent(a):
@@ -151,8 +153,10 @@ class Commands:
             config.save(e.root)
             e.config = config
             e.git = Git(e.root, config.target_branch, config.remote)
-            e.backend.config = config
-            e.tracker.command = config.bd_command
+            if isinstance(e.backend, Docker):
+                e.backend.config = config
+            if isinstance(e.tracker, Beads):
+                e.tracker.command = config.bd_command
             s.emit("configuration.updated", {"fields": sorted(a["changes"])})
             return config.model_dump()
         if command == "adapters list":

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,13 +13,20 @@ STATE_DIR = ".harness"
 
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    provider: Literal["codex", "agy", "generic"] = "generic"
+    provider: str = "generic"
     command: list[str] = Field(min_length=1)
     env_names: list[str] = Field(default_factory=list)
     mode: str | None = None
     model: str | None = None
     auth_method: str | None = None
     credential_files: dict[str, str] = Field(default_factory=dict)
+
+
+def default_profiles() -> dict[str, Profile]:
+    # Import after Profile is defined so providers can own their launch defaults.
+    from .adapters.antigravity import default_profile as agy_profile
+    from .adapters.codex import default_profile as codex_profile
+    return {"codex": codex_profile(), "agy": agy_profile()}
 
 
 class Config(BaseModel):
@@ -45,15 +51,7 @@ class Config(BaseModel):
     tool_paths: list[str] = Field(default_factory=list)
     validation_commands: list[list[str]] = Field(default_factory=list)
     profiles: dict[str, Profile] = Field(
-        default_factory=lambda: {
-            "codex": Profile(
-                provider="codex",
-                command=["codex-acp"],
-                env_names=["OPENAI_API_KEY", "CODEX_API_KEY"],
-                mode="agent-full-access",
-            ),
-            "agy": Profile(provider="agy", command=["/opt/agy/agy_acp_server.par", "--uid="]),
-        }
+        default_factory=default_profiles
     )
 
     @model_validator(mode="after")

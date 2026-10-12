@@ -450,3 +450,22 @@ Documentation was consulted during planning on 2026-10-11. Compatibility and cap
 - [Beads](https://github.com/gastownhall/beads)
 - [Perles and its requirements](https://github.com/zjrosen/perles#requirements)
 
+
+
+### Selected adapter architecture (0.1.3)
+
+Use a structural `CodingHarnessAdapter` Protocol exported by `adapters/__init__.py`,
+with typed factory/registry and engine storage. Its lifecycle is `start(LaunchContext)`,
+capabilities, authentication, create/restore `session`, `prompt`, `cancel`, optional
+`close_session`, and bounded transport `close`. Third-party adapters do not inherit
+an ACP base class. Codex and Antigravity modules own their launch defaults and
+container setup; Antigravity also owns native OAuth bootstrap. Generic ACP profiles
+share the internal `_acp.py` transport. Profiles preserve commands, auth, mode and
+model settings. The engine retains transcript fallback and global quota handling.
+The backend retains fenced credential copies/environment and all container
+ownership/isolation/resource/Git-transfer policy. Engine teardown still revokes
+worker credentials before cancellation-shielded transport close and quiescence,
+preserving files and issue context. Pyright checks all production source through
+a locked uv development dependency, alongside Ruff and pytest in both CI platforms.
+No automatic self-update is introduced; live provider/host verification remains
+separate from controlled regression evidence.

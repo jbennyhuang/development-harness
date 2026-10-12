@@ -34,10 +34,13 @@ class Beads:
     def __init__(self, root: Path, command: list[str]):
         self.root, self.command = root, command
 
-    async def call(self, *args: str) -> object:
+    async def call(self, *args: str) -> dict | list[dict]:
         _, out, _ = await run([*self.command, *args, "--json"], self.root)
         try:
-            return json.loads(out)
+            result = json.loads(out)
+            if not isinstance(result, (dict, list)):
+                raise HarnessError("invalid_beads_output", "Beads must return an object or list")
+            return result
         except json.JSONDecodeError as exc:
             raise HarnessError("invalid_beads_output", "Beads did not return JSON") from exc
 

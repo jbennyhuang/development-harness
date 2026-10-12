@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.2-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.3-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -99,8 +99,9 @@ For self-improvement, an installed known-good release manages an issue in this s
 ## Development checks
 
 ```powershell
-uv run ruff check .
-uv run pytest -q
+uv run --frozen ruff check .
+uv run --frozen pyright
+uv run --frozen pytest -q
 $env:HARNESS_TEST_DOCKER = "1"
 uv run pytest tests/test_docker.py -q
 uv build
@@ -109,3 +110,40 @@ uv build
 The ordinary suite uses controlled provider fixtures plus real Git and real CLI/service subprocesses. The Docker check is opt-in. Real provider runs use account quota and are recorded separately in `docs/verification.md`.
 
 At every ACP turn boundary the host revokes the scoped credential, closes the adapter, and stops the issue container before exporting or applying a result. Export briefly restarts only the inert container and stops it again. Errors and cancellations also stop residual commands while retaining files, issue locks, sessions, transcripts, and submitted evidence for retry. Credentials authorize only the currently bound role and workflow stage.
+
+
+## Adapter package and extension
+
+`src/development_harness/adapters/__init__.py` exports the structural Python
+`CodingHarnessAdapter` protocol, `LaunchContext`, `AdapterFactory`, and `ADAPTERS`.
+`codex.py` owns Codex launch defaults and container credential/start integration;
+`antigravity.py` owns Antigravity launch defaults, container startup, and native OAuth
+bootstrap. `_acp.py` shares ACP negotiation, permissions, structured updates,
+authentication, restore/fallback, mode/model selection, quota detection and bounded
+transport teardown. `_context.py` defines the launch data shared by providers.
+
+The public protocol has a read-only `capabilities` mapping and async methods:
+`start(context)`, `authenticate(method_id, timeout=60)`,
+`session(existing, history="") -> (session_id, restored)`,
+`prompt(session_id, text, timeout)`, `cancel(session_id)`,
+`close_session(session_id)`, and `close()`. `start` returns negotiated capabilities;
+`prompt` returns the provider result mapping. `session` reports whether native
+restore succeeded; the engine supplies recorded context in the next prompt when
+it did not. Authentication may be a no-op for providers that do not need it.
+Session close may be a no-op when unsupported; transport close must be bounded.
+The engine closes transports at turn boundaries while retaining issue sessions.
+
+To add a provider, implement those methods in a new module, without needing to
+subclass `ACPAdapter`. Register a `(Profile, emit) -> CodingHarnessAdapter` factory
+in `ADAPTERS`, then configure a profile with that provider key and command/auth
+settings. An embedding application can also inject `Engine(adapter_factory=...)`.
+Add a structural conformance assignment and lifecycle tests; run Pyright, Ruff,
+and pytest. JSON payload mappings remain extensible for negotiated provider data.
+
+`LaunchContext` contains the prepared issue's backend, issue ID, scoped environment,
+and workspace. Adapters use `Backend.credentials` for explicitly selected credential
+copies and `Backend.agent_command` for a fenced container subprocess command.
+The harness/backend retain container ownership checks, isolation/resource policy,
+Git bundles, credential revocation, cancellation-shielded shutdown, quiescence and
+cleanup. Provider modules must use these facilities rather than bypass them.
+Pyright checks all production source in basic mode; Ruff remains the lint check.

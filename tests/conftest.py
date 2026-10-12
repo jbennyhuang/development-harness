@@ -109,11 +109,22 @@ class FixtureAdapter:
         self.env = {}
         self.session_calls = []
 
+    capabilities = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+
+    async def authenticate(self, method_id, timeout=60):
+        pass
+
+    async def close_session(self, session_id):
+        pass
+
+    async def start(self, context):
+        return await self.connect([], context.env)
+
     async def connect(self, command, env):
         self.env = env
         return {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
 
-    async def session(self, existing):
+    async def session(self, existing, history=""):
         self.session_calls.append(existing)
         return existing or "fixture-session", bool(existing)
 

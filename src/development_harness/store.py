@@ -129,8 +129,10 @@ class Store:
 
     def emit(self, type: str, data: dict, issue_id: str | None = None,
              agent_id: str | None = None) -> int:
-        return self.db.execute("INSERT INTO updates(at,type,issue_id,agent_id,data) VALUES(?,?,?,?,?)",
-                               (time.time(), type, issue_id, agent_id, json.dumps(data))).lastrowid
+        cursor = self.db.execute("INSERT INTO updates(at,type,issue_id,agent_id,data) VALUES(?,?,?,?,?)",
+                               (time.time(), type, issue_id, agent_id, json.dumps(data)))
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
 
     def transition(self, id: str, stage: str, **changes: Any) -> dict:
         with self.transaction():
@@ -188,6 +190,7 @@ class Store:
         row = self.db.execute("SELECT cursor FROM consumers WHERE id=?", (consumer,)).fetchone()
         cursor = cursor if cursor is not None else (row[0] if row else 0)
         highest = self.db.execute("SELECT COALESCE(MAX(id),0) FROM updates").fetchone()[0]
+        assert cursor is not None
         if not 0 <= cursor <= highest or not 1 <= limit <= 200:
             raise HarnessError("invalid_cursor", "Cursor or page limit is out of range")
         rows = list(self.db.execute("SELECT * FROM updates WHERE id>? ORDER BY id LIMIT ?",

@@ -9,7 +9,9 @@ import os
 import secrets
 import signal
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 from pydantic import ValidationError
@@ -85,8 +87,7 @@ async def serve(root: Path):
     @web.middleware
     async def errors(request, handler):
         try:
-            result = await handler(request)
-            return web.json_response({"ok": True, "result": result})
+            return await handler(request)
         except HarnessError as exc:
             return web.json_response({"ok": False, "error": exc.as_dict()},
                                      status=401 if exc.code == "unauthorized" else 400)
@@ -122,10 +123,15 @@ async def serve(root: Path):
             return engine.worker_assignment(credential)
         return engine.submit(credential, await request.json())
 
+    def route(handler: Callable[[web.Request], Awaitable[Any]]) -> Callable[[web.Request], Awaitable[web.Response]]:
+        async def respond(request: web.Request) -> web.Response:
+            return web.json_response({"ok": True, "result": await handler(request)})
+        return respond
+
     admin = web.Application(middlewares=[errors], client_max_size=1_000_000)
-    admin.add_routes([web.get("/status", status), web.post("/command", command), web.post("/stop", shutdown)])
+    admin.add_routes([web.get("/status", route(status)), web.post("/command", route(command)), web.post("/stop", route(shutdown))])
     workers = web.Application(middlewares=[errors], client_max_size=1_000_000)
-    workers.add_routes([web.get("/assignment", worker), web.post("/submit", worker)])
+    workers.add_routes([web.get("/assignment", route(worker)), web.post("/submit", route(worker))])
     admin_runner, worker_runner = web.AppRunner(admin, access_log=None), web.AppRunner(workers, access_log=None)
     scheduler = None
     try:
@@ -136,8 +142,8 @@ async def serve(root: Path):
         worker_site = web.TCPSite(worker_runner, "0.0.0.0", 0)
         await admin_site.start()
         await worker_site.start()
-        admin_port = admin_site._server.sockets[0].getsockname()[1]
-        worker_port = worker_site._server.sockets[0].getsockname()[1]
+        admin_port = admin_runner.addresses[0][1]
+        worker_port = worker_runner.addresses[0][1]
         engine.worker_url = f"http://host.docker.internal:{worker_port}"
         publish(state / "service.json", {"url": f"http://127.0.0.1:{admin_port}", "token": token,
                                          "pid": os.getpid(), "generation": generation})

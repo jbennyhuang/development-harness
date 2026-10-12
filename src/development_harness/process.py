@@ -61,4 +61,5 @@ async def run(argv: list[str], cwd: Path | None = None, timeout: float = 120,
     if check and proc.returncode:
         raise HarnessError("command_failed", f"{argv[0]} exited with {proc.returncode}",
                            returncode=proc.returncode, stderr=stderr, stdout=stdout)
+    assert proc.returncode is not None
     return proc.returncode, stdout, stderr

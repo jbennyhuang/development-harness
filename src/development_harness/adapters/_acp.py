@@ -5,9 +5,9 @@ import contextlib
 import json
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Never
 
-from acp import Client, connect_to_agent
+from acp import Agent, connect_to_agent
 from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
@@ -16,10 +16,11 @@ from acp.schema import (
     TextContentBlock,
 )
 
-from . import __version__
-from .config import Profile
-from .domain import HarnessError
-from .process import process_options, terminate
+from .. import __version__
+from ..config import Profile
+from ..domain import HarnessError
+from ..process import process_options, terminate
+from ._context import LaunchContext
 
 USAGE_MARKERS = (
     "usage limit", "usage_limit", "quota exceeded", "quota_exceeded",
@@ -28,12 +29,12 @@ USAGE_MARKERS = (
 )
 
 
-def usage_exhausted(value: Any) -> bool:
+def usage_exhausted(value: object) -> bool:
     text = json.dumps(value, default=str).lower()
     return any(marker in text for marker in USAGE_MARKERS)
 
 
-class ACPClient(Client):
+class ACPClient:
     def __init__(self, emit: Callable[[dict], None]):
         self.emit = emit
 
@@ -59,15 +60,33 @@ class ACPClient(Client):
         self.emit({"method": method, "params": params})
 
 
+    async def _unsupported(self, *args: object, **kwargs: object) -> Never:
+        from acp import RequestError
+        raise RequestError.method_not_found("Client capability not advertised")
+
+    write_text_file = _unsupported
+    read_text_file = _unsupported
+    create_terminal = _unsupported
+    terminal_output = _unsupported
+    release_terminal = _unsupported
+    wait_for_terminal_exit = _unsupported
+    kill_terminal = _unsupported
+    create_elicitation = _unsupported
+    complete_elicitation = _unsupported
+
+    def on_connect(self, conn: object) -> None:
+        pass
+
+
 class ACPAdapter:
     """Provider-neutral ACP v1 conversation manager using the official SDK."""
 
     def __init__(self, profile: Profile, emit: Callable[[dict], None]):
         self.profile, self.emit = profile, emit
-        self.proc = None
-        self.connection = None
+        self.proc: asyncio.subprocess.Process | None = None
+        self._connection = None
         self.capabilities: dict = {}
-        self.stderr_task = None
+        self.stderr_task: asyncio.Task[None] | None = None
         self.workspace = "/workspace"
 
     async def connect(self, command: list[str], env: dict[str, str]) -> dict:
@@ -76,9 +95,13 @@ class ACPAdapter:
             stderr=asyncio.subprocess.PIPE, env={**os.environ, **env}, **process_options(),
         )
 
+        assert self.proc.stdin is not None and self.proc.stdout is not None
+        assert self.proc.stderr is not None
+        stream = self.proc.stderr
+
         async def stderr() -> None:
             total = 0
-            while chunk := await self.proc.stderr.read(4096):
+            while chunk := await stream.read(4096):
                 # Do not store unbounded stderr or credentials.
                 text = chunk.decode("utf-8", "replace")
                 total += len(text)
@@ -88,9 +111,9 @@ class ACPAdapter:
                     self.emit({"diagnostic": text})
 
         self.stderr_task = asyncio.create_task(stderr())
-        self.connection = connect_to_agent(ACPClient(self.emit), self.proc.stdin, self.proc.stdout)
+        self._connection = connect_to_agent(ACPClient(self.emit), self.proc.stdin, self.proc.stdout)
         response = await asyncio.wait_for(
-            self.connection.initialize(
+            self._connection.initialize(
                 protocol_version=1, client_capabilities=ClientCapabilities(),
                 client_info=Implementation(name="development-harness", version=__version__),
             ), 60,
@@ -100,37 +123,54 @@ class ACPAdapter:
             raise HarnessError("unsupported_acp_version", "Adapter requires stable ACP v1")
         return self.capabilities
 
+    def _require_connection(self) -> Agent:
+        if self._connection is None:
+            raise HarnessError("adapter_not_started", "Start the adapter before using a session")
+        return self._connection
+
+    async def authenticate(self, method_id: str, timeout: int = 60) -> None:
+        await asyncio.wait_for(self._require_connection().authenticate(method_id=method_id), timeout)
+
+    async def start(self, context: LaunchContext) -> dict:
+        self.workspace = context.workspace
+        await context.backend.credentials(context.issue_id, self.profile)
+        return await self.connect(
+            context.backend.agent_command(context.issue_id, self.profile, context.env), context.env
+        )
+
     async def session(self, existing: str | None, history: str = "") -> tuple[str, bool]:
+        connection = self._require_connection()
         restored = False
         capabilities = self.capabilities.get("agentCapabilities", {})
         if self.profile.auth_method:
-            await asyncio.wait_for(self.connection.authenticate(method_id=self.profile.auth_method), 60)
+            await self.authenticate(self.profile.auth_method)
         if existing and capabilities.get("loadSession"):
             try:
-                await self.connection.load_session(cwd=self.workspace, session_id=existing, mcp_servers=[])
+                await connection.load_session(cwd=self.workspace, session_id=existing, mcp_servers=[])
                 session_id, restored = existing, True
             except Exception as exc:
                 if not any(marker in str(exc).lower() for marker in ("not found", "not_found", "unknown session")):
                     raise
                 self.emit({"session_restore_unavailable": True})
-                response = await self.connection.new_session(cwd=self.workspace, mcp_servers=[])
+                response = await connection.new_session(cwd=self.workspace, mcp_servers=[])
                 session_id = response.session_id
         else:
-            response = await self.connection.new_session(cwd=self.workspace, mcp_servers=[])
+            response = await connection.new_session(cwd=self.workspace, mcp_servers=[])
             session_id = response.session_id
         if self.profile.mode:
-            await self.connection.set_session_mode(
+            await connection.set_session_mode(
                 session_id=session_id, mode_id=self.profile.mode
             )
         if self.profile.model:
-            await self.connection.set_config_option(session_id=session_id, config_id="model", value=self.profile.model)
+            await connection.set_config_option(session_id=session_id, config_id="model", value=self.profile.model)
         # If native restoration is unsupported, the next prompt receives the recorded history.
         return session_id, restored
 
     async def prompt(self, session_id: str, text: str, timeout: int) -> dict:
+        connection = self._require_connection()
         try:
             response = await asyncio.wait_for(
-                self.connection.prompt(session_id=session_id, prompt=[TextContentBlock(type="text", text=text)]),
+                connection.prompt(session_id=session_id, prompt=[TextContentBlock(type="text", text=text)]),
                 timeout,
             )
             return response.model_dump(by_alias=True, exclude_none=True)
@@ -140,31 +180,20 @@ class ACPAdapter:
             raise
 
     async def cancel(self, session_id: str) -> None:
-        if self.connection:
+        if self._connection:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.connection.cancel(session_id=session_id), 5)
+                await asyncio.wait_for(self._connection.cancel(session_id=session_id), 5)
 
     async def close_session(self, session_id: str) -> None:
         caps = self.capabilities.get("agentCapabilities", {}).get("sessionCapabilities", {})
-        if self.connection and "close" in caps:
-            await self.connection.close_session(session_id=session_id)
+        if self._connection and "close" in caps:
+            await asyncio.wait_for(self._connection.close_session(session_id=session_id), 5)
 
     async def close(self) -> None:
-        if self.connection:
+        if self._connection:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.connection.close(), 5)
+                await asyncio.wait_for(self._connection.close(), 5)
         if self.proc:
             await terminate(self.proc)
         if self.stderr_task:
             await asyncio.gather(self.stderr_task, return_exceptions=True)
-
-
-class CodexAdapter(ACPAdapter):
-    """Codex uses codex-acp; provider policy is configured through ACP modes."""
-
-
-class AntigravityAdapter(ACPAdapter):
-    """Google Antigravity uses the separately published agy ACP server."""
-
-
-ADAPTERS = {"generic": ACPAdapter, "codex": CodexAdapter, "agy": AntigravityAdapter}

@@ -8,9 +8,8 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
-from .adapters import ADAPTERS, usage_exhausted
+from .adapters import ADAPTERS, AdapterFactory, CodingHarnessAdapter, LaunchContext, usage_exhausted
 from .backend import Backend, Docker
 from .config import Config
 from .domain import HarnessError, Result, Stage
@@ -25,14 +24,14 @@ POST_MERGE = {Stage.MERGED, Stage.RESOLVING, Stage.CLEANUP}
 
 class Engine:
     def __init__(self, root: Path, config: Config, store: Store, tracker: Tracker | None = None,
-                 backend: Backend | None = None, git: Git | None = None, adapter_factory=None):
+                 backend: Backend | None = None, git: Git | None = None, adapter_factory: AdapterFactory | None = None):
         self.root, self.config, self.store = root, config, store
         self.tracker = tracker or Beads(root, config.bd_command)
         self.backend = backend or Docker(root, config)
         self.git = git or Git(root, config.target_branch, config.remote)
         self.adapter_factory = adapter_factory
         self.tasks: dict[str, asyncio.Task] = {}
-        self.adapters: dict[str, Any] = {}
+        self.adapters: dict[str, CodingHarnessAdapter] = {}
         self.integration_issue: str | None = None
         self.worker_url = ""
         self.stopping = False
@@ -379,15 +378,13 @@ class Engine:
                 self.store.emit("agent.response", {"session": data.get("session_id"), "content": update.get("content")}, id, a["id"])
 
         factory = self.adapter_factory or ADAPTERS[profile.provider]
-        adapter = None
+        adapter: CodingHarnessAdapter | None = None
         env = {"HARNESS_WORKER_TOKEN": token, "HARNESS_WORKER_URL": self.worker_url}
         try:
             adapter = factory(profile, emit)
             self.adapters[a["id"]] = adapter
             await self.backend.prepare(id, await self.git.bundle(id), e["branch"])
-            if hasattr(self.backend, "credentials"):
-                await self.backend.credentials(id, profile)
-            capabilities = await adapter.connect(self.backend.agent_command(id, profile, env), env)
+            capabilities = await adapter.start(LaunchContext(self.backend, id, env))
             current = self.store.require("agent", a["id"])
             current["capabilities"] = capabilities
             self.store.put("agent", a["id"], current)
@@ -451,7 +448,7 @@ class Engine:
                          "reviewer": {Stage.REVIEWING, Stage.PREPARING_MERGE}}
         if (a.get("attempt") != e["generation"] or a["state"] != "assigned_working"
                 or e.get(a.get("role")) != a["id"]
-                or e["stage"] not in active_stages.get(a.get("role"), set())):
+                or e["stage"] not in active_stages.get(a.get("role") or "", set())):
             raise HarnessError("stale_assignment", "Worker assignment is no longer active")
         if not self.store.execution_state()["enabled"] or e.get("paused"):
             raise HarnessError("execution_paused", "Execution is paused; preserve changes")
