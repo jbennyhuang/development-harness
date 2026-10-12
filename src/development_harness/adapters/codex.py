@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import override
 
 from ..config import Profile
-from . import CodingHarnessAdapter, LaunchContext
+from . import AcpAgentAdapter, LaunchContext
 
 
-class Codex(CodingHarnessAdapter):
+class Codex(AcpAgentAdapter):
     """Codex ACP launch with explicitly configured auth files and environment."""
 
     @override

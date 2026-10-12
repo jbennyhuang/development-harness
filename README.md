@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.4-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.5-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -115,12 +115,19 @@ At every ACP turn boundary the host revokes the scoped credential, closes the ad
 ## Adapter package and extension
 
 `src/development_harness/adapters/__init__.py` contains the abstract
-`CodingHarnessAdapter` base, shared ACP lifecycle, `LaunchContext`, typed
+`AcpAgentAdapter` base, incoming ACP callbacks and outgoing lifecycle, `LaunchContext`, typed
 `AdapterFactory`, and `ADAPTERS` registry. `Codex` in `codex.py` and `Antigravity`
 in `antigravity.py` subclass the base and own launch defaults and credential setup.
 Antigravity also owns the native OAuth bootstrap. `GenericACPAdapter` supports
 configured ACP commands; `ACPAdapter`, `CodexAdapter`, and `AntigravityAdapter`
-remain compatibility aliases.
+remain compatibility aliases. `CodingHarnessAdapter` is a secondary alias for
+`AcpAgentAdapter` for existing imports.
+
+The adapter itself receives SDK session updates, permission requests, and extension
+notifications through its instance emitter. It selects an offered allow option
+inside the issue container, rejects unadvertised filesystem, terminal and
+elicitation requests, and reports unsupported extensions without echoing values.
+The same object is passed to the SDK connection; there is no separate callback helper.
 
 The public lifecycle is `start(context)`, `authenticate(method_id, timeout=60)`,
 `session(existing, history="") -> (session_id, restored)`,
@@ -138,9 +145,9 @@ To add an ACP provider, subclass the base and implement one typed hook:
 
 ```python
 from typing import override
-from development_harness.adapters import ADAPTERS, CodingHarnessAdapter, LaunchContext
+from development_harness.adapters import ADAPTERS, AcpAgentAdapter, LaunchContext
 
-class CustomAgent(CodingHarnessAdapter):
+class CustomAgent(AcpAgentAdapter):
     @override
     async def setup(self, context: LaunchContext) -> list[str]:
         await context.backend.credentials(context.issue_id, self.profile)
@@ -151,7 +158,7 @@ ADAPTERS["custom"] = CustomAgent
 
 Register before constructing a `Profile(provider="custom", command=[...])`.
 Subclasses may define their own constructors and members; a registry factory must
-accept `(Profile, Emit)` and return a `CodingHarnessAdapter`. An embedding
+accept `(Profile, Emit)` and return an `AcpAgentAdapter`. An embedding
 application can also inject `Engine(adapter_factory=...)`. Unregistered keys
 raise `unknown_provider` during configuration validation and before pool creation,
 binding, or dispatch, including profiles mutated after validation.

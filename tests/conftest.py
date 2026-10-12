@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from development_harness.adapters import CodingHarnessAdapter
+from development_harness.adapters import AcpAgentAdapter
 from development_harness.config import Config
 from development_harness.engine import Engine
 from development_harness.git import Git
@@ -104,7 +104,7 @@ class IsolatedTestBackend:
         return [id]
 
 
-class FixtureAdapter(CodingHarnessAdapter):
+class FixtureAdapter(AcpAgentAdapter):
     def __init__(self, engine, profile, emit):
         super().__init__(profile, emit)
         self.engine, self.emit = engine, emit

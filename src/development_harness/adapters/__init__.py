@@ -5,7 +5,7 @@ import contextlib
 import json
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Never, override
 
@@ -55,9 +55,16 @@ def usage_exhausted(value: object) -> bool:
     return any(marker in text for marker in USAGE_MARKERS)
 
 
-class ACPClient:
-    def __init__(self, emit: Callable[[JSONObject], None]) -> None:
-        self.emit = emit
+class AcpAgentAdapter(ABC):
+    """ACP callback receiver and provider-neutral lifecycle manager using the SDK."""
+
+    def __init__(self, profile: Profile, emit: Callable[[JSONObject], None]) -> None:
+        self.profile, self.emit = profile, emit
+        self.proc: asyncio.subprocess.Process | None = None
+        self._connection: ClientSideConnection | None = None
+        self.capabilities: JSONObject = {}
+        self.stderr_task: asyncio.Task[None] | None = None
+        self.workspace = "/workspace"
 
     async def request_permission(self, session_id: str, tool_call: ToolCallUpdate, options: list[PermissionOption], **kwargs: object) -> RequestPermissionResponse:
         # Full tool permission is confined to the issue container.
@@ -72,15 +79,14 @@ class ACPClient:
         data = json_object(update.model_dump(by_alias=True, exclude_none=True))
         self.emit({"session_id": session_id, "update": data})
 
-    async def ext_method(self, method: str, params: JSONObject) -> JSONObject:
+    async def ext_method(self, method: str, params: Mapping[str, object]) -> JSONObject:
         from acp import RequestError
         params = json_object(params)
         self.emit({"unsupported_extension": method, "parameter_keys": [key for key in sorted(params)]})
         raise RequestError.method_not_found(method)
 
-    async def ext_notification(self, method: str, params: JSONObject) -> None:
+    async def ext_notification(self, method: str, params: Mapping[str, object]) -> None:
         self.emit({"method": method, "params": json_object(params)})
-
 
     async def _unsupported(self, *args: object, **kwargs: object) -> Never:
         from acp import RequestError
@@ -96,20 +102,9 @@ class ACPClient:
     create_elicitation = _unsupported
     complete_elicitation = _unsupported
 
-    def on_connect(self, conn: object) -> None:
+    def on_connect(self, conn: Agent) -> None:
+        # The SDK invokes this during construction; connect owns initialization.
         pass
-
-
-class CodingHarnessAdapter(ABC):
-    """Provider-neutral ACP v1 conversation manager using the official SDK."""
-
-    def __init__(self, profile: Profile, emit: Callable[[JSONObject], None]) -> None:
-        self.profile, self.emit = profile, emit
-        self.proc: asyncio.subprocess.Process | None = None
-        self._connection: ClientSideConnection | None = None
-        self.capabilities: JSONObject = {}
-        self.stderr_task: asyncio.Task[None] | None = None
-        self.workspace = "/workspace"
 
     async def connect(self, command: list[str], env: dict[str, str]) -> JSONObject:
         self.proc = await asyncio.create_subprocess_exec(
@@ -133,7 +128,7 @@ class CodingHarnessAdapter(ABC):
                     self.emit({"diagnostic": text})
 
         self.stderr_task = asyncio.create_task(stderr())
-        self._connection = connect_to_agent(ACPClient(self.emit), self.proc.stdin, self.proc.stdout)
+        self._connection = connect_to_agent(self, self.proc.stdin, self.proc.stdout)
         response = await asyncio.wait_for(
             self._connection.initialize(
                 protocol_version=1, client_capabilities=ClientCapabilities(),
@@ -224,7 +219,7 @@ class CodingHarnessAdapter(ABC):
             await asyncio.gather(self.stderr_task, return_exceptions=True)
 
 
-class GenericACPAdapter(CodingHarnessAdapter):
+class GenericACPAdapter(AcpAgentAdapter):
     """Configured ACP command with backend-owned credential fencing."""
     @override
     async def setup(self, context: LaunchContext) -> list[str]:
@@ -232,7 +227,9 @@ class GenericACPAdapter(CodingHarnessAdapter):
         return context.backend.agent_command(context.issue_id, self.profile, context.env)
 
 ACPAdapter = GenericACPAdapter
-AdapterFactory = Callable[["Profile", Emit], CodingHarnessAdapter]
+# Secondary compatibility name for existing public imports.
+CodingHarnessAdapter = AcpAgentAdapter
+AdapterFactory = Callable[["Profile", Emit], AcpAgentAdapter]
 
 # Providers import the fully defined base; defaults create Profiles only on demand.
 from .antigravity import Antigravity, AntigravityAdapter  # noqa: E402 — providers require the defined base
@@ -248,6 +245,6 @@ def resolve_adapter_factory(provider: str) -> AdapterFactory:
         raise HarnessError("unknown_provider", "Coding provider is not registered", provider=provider)
     return factory
 
-__all__ = ["CodingHarnessAdapter", "LaunchContext", "AdapterFactory", "ADAPTERS", "Emit", "Update",
+__all__ = ["AcpAgentAdapter", "CodingHarnessAdapter", "LaunchContext", "AdapterFactory", "ADAPTERS", "Emit", "Update",
            "JSONObject", "JSONValue", "resolve_adapter_factory", "GenericACPAdapter", "ACPAdapter", "Codex", "CodexAdapter",
            "Antigravity", "AntigravityAdapter", "usage_exhausted"]

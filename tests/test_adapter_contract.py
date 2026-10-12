@@ -2,7 +2,7 @@ import pytest
 from adapter_contract import ThirdPartyAdapter, subclass_contract
 from conftest import advance
 
-from development_harness.adapters import ADAPTERS, Antigravity, Codex, CodingHarnessAdapter
+from development_harness.adapters import ADAPTERS, AcpAgentAdapter, Antigravity, Codex
 from development_harness.config import Config, Profile
 from development_harness.domain import HarnessError
 
@@ -26,7 +26,7 @@ async def test_engine_runs_subclass_third_party_adapter_and_retains_context(engi
     await engine.sync_issues()
     await advance(engine, lambda: engine.store.require("execution", issue["id"])["paused"])
     adapter = instances[0]
-    assert isinstance(adapter, CodingHarnessAdapter)
+    assert isinstance(adapter, AcpAgentAdapter)
     assert adapter.closed and adapter.prompts and adapter.restores == [None]
     assert adapter.context.issue_id == issue["id"]
     assert issue["id"] in engine.backend.stopped
@@ -76,11 +76,11 @@ async def test_mutated_unregistered_provider_rejected_before_binding_or_dispatch
 def test_abstract_provider_hook_is_required():
     from inspect import isabstract
 
-    assert isabstract(CodingHarnessAdapter)
+    assert isabstract(AcpAgentAdapter)
     with pytest.raises(TypeError, match="setup"):
-        CodingHarnessAdapter(Profile(command=["unused"]), lambda update: None)
-    assert issubclass(Codex, CodingHarnessAdapter)
-    assert issubclass(Antigravity, CodingHarnessAdapter)
+        AcpAgentAdapter(Profile(command=["unused"]), lambda update: None)
+    assert issubclass(Codex, AcpAgentAdapter)
+    assert issubclass(Antigravity, AcpAgentAdapter)
     assert not isabstract(Codex) and not isabstract(Antigravity)
 
 
@@ -91,8 +91,8 @@ def test_pyright_rejects_wrong_provider_override(tmp_path):
     fixture = tmp_path / "bad_adapter.py"
     fixture.write_text("""
 from typing import override
-from development_harness.adapters import CodingHarnessAdapter
-class WrongAdapter(CodingHarnessAdapter):
+from development_harness.adapters import AcpAgentAdapter
+class WrongAdapter(AcpAgentAdapter):
     @override
     async def setup(self, context: int) -> str:
         return "invalid"

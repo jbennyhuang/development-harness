@@ -1,12 +1,14 @@
 """Strict-checked third-party ABC extension, including its own constructor/members."""
 from typing import override
 
-from development_harness.adapters import CodingHarnessAdapter, Emit, LaunchContext, Update
+from acp import Client
+
+from development_harness.adapters import AcpAgentAdapter, Emit, LaunchContext, Update
 from development_harness.config import Profile
 from development_harness.engine import Engine
 
 
-class ThirdPartyAdapter(CodingHarnessAdapter):
+class ThirdPartyAdapter(AcpAgentAdapter):
     def __init__(self, engine: Engine, profile: Profile, emit: Emit) -> None:
         super().__init__(profile, emit)
         self.engine, self.emit = engine, emit
@@ -59,7 +61,7 @@ class ThirdPartyAdapter(CodingHarnessAdapter):
         self.closed = True
 
 
-def subclass_contract(adapter: ThirdPartyAdapter) -> CodingHarnessAdapter:
+def subclass_contract(adapter: ThirdPartyAdapter) -> AcpAgentAdapter:
     return adapter
 
 
@@ -67,3 +69,7 @@ def retains_subclass_members(adapter: ThirdPartyAdapter) -> list[str]:
     engine: Engine = adapter.engine
     assert engine is adapter.engine
     return adapter.prompts
+
+
+def sdk_client_contract(adapter: AcpAgentAdapter) -> Client:
+    return adapter

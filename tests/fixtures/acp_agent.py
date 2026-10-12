@@ -11,6 +11,7 @@ for line in sys.stdin:
     request = json.loads(line)
     method, id = request.get("method"), request.get("id")
     if method == "initialize":
+        assert request["params"].get("clientCapabilities", {}) == {}
         result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"close": {}}},
                   "agentInfo": {"name": "protocol-fixture", "version": "1"}, "authMethods": []}
     elif method == "session/new":
@@ -32,10 +33,22 @@ for line in sys.stdin:
             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "fixture response"}}}})
         send({"id": "permission", "method": "session/request_permission", "params": {
             "sessionId": "fixture-session", "toolCall": {"toolCallId": "call", "title": "Run inside container"},
-            "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
+            "options": [{"optionId": "deny", "name": "Reject", "kind": "reject_once"}, {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
         response = json.loads(sys.stdin.readline())
         if response.get("result", {}).get("outcome", {}).get("optionId") != "allow":
             raise RuntimeError("Permission response was not valid")
+        send({"method": "_fixture/status", "params": {"text": request["params"]["prompt"][0]["text"]}})
+        for capability, params in (
+            ("fs/read_text_file", {"sessionId": "fixture-session", "path": "/host/file"}),
+            ("fs/write_text_file", {"sessionId": "fixture-session", "path": "/host/file", "content": "data"}),
+            ("terminal/create", {"sessionId": "fixture-session", "command": "unadvertised"}),
+            ("elicitation/create", {"message": "Question", "mode": "form", "requestedSchema": {"type": "object", "properties": {}}}),
+            ("_fixture/unsupported", {"private": "do not echo"}),
+        ):
+            send({"id": capability, "method": capability, "params": params})
+            response = json.loads(sys.stdin.readline())
+            assert response["id"] == capability
+            assert response["error"]["code"] == -32601, response
         result = {"stopReason": "end_turn"}
     elif method == "session/set_mode":
         assert request["params"]["modeId"] == "full"

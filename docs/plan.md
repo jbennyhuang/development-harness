@@ -452,15 +452,21 @@ Documentation was consulted during planning on 2026-10-11. Compatibility and cap
 
 
 
-### Selected adapter architecture (0.1.4)
+### Selected adapter architecture (0.1.5)
 
-`CodingHarnessAdapter` is an abstract base class in `adapters/__init__.py`.
-That module contains the shared ACP lifecycle, `LaunchContext`, public JSON/update
+`AcpAgentAdapter` is an abstract base class in `adapters/__init__.py`.
+The same adapter receives incoming ACP callbacks and manages the outgoing ACP
+lifecycle, passing itself to the SDK connection. Session updates and extension
+notifications use its instance emitter; permission selection stays inside issue
+containers. Unadvertised filesystem, terminal and elicitation requests return
+request errors, and unsupported extensions emit parameter keys only.
+That module also contains `LaunchContext`, public JSON/update
 and factory types, and the live registry. `Codex` and `Antigravity` subclass the
 base, implement `setup(LaunchContext) -> list[str]` with `typing.override`, and
 retain their provider defaults and credential launch integration. Antigravity
 retains native OAuth bootstrap. `GenericACPAdapter` supports generic ACP profiles;
-the old concrete adapter names remain aliases. No implements decorator is used.
+the old concrete adapter names remain aliases, and `CodingHarnessAdapter` is a
+secondary compatibility alias for the new base. No implements decorator is used.
 
 The base starts an isolated ACP connection after the provider setup hook,
 negotiates v1 and capabilities, authenticates when configured, creates/restores
@@ -474,7 +480,7 @@ and issue context. Request scope, generation checks, journal transactions and
 scheduler transitions remain unchanged.
 
 Extensions subclass the ABC and implement the setup hook, then register a
-`(Profile, Emit) -> CodingHarnessAdapter` factory before validating a profile.
+`(Profile, Emit) -> AcpAgentAdapter` factory before validating a profile.
 They may retain their own constructor and members and inherit the ACP lifecycle;
 no scheduler changes are required. Registry validation rejects unknown provider
 keys before pool creation, binding or dispatch, including mutated profiles.

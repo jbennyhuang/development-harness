@@ -14,10 +14,10 @@ from ..config import Config, Profile
 from ..domain import HarnessError
 from ..json_types import JSONObject, string
 from ..process import run
-from . import CodingHarnessAdapter, LaunchContext
+from . import AcpAgentAdapter, LaunchContext
 
 
-class Antigravity(CodingHarnessAdapter):
+class Antigravity(AcpAgentAdapter):
     """Antigravity ACP launch with fenced copies of the native OAuth cache."""
 
     @override

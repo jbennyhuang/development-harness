@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -74,13 +75,11 @@ def test_provider_owned_defaults_remain_compatible():
 async def test_not_started_and_unadvertised_client_capabilities_fail_explicitly():
     from acp import RequestError
 
-    from development_harness.adapters import ACPClient
-
     adapter = ACPAdapter(Profile(command=["unused"]), lambda data: None)
     with pytest.raises(HarnessError, match="Start the adapter"):
         await adapter.authenticate("auth")
     with pytest.raises(RequestError):
-        await ACPClient(lambda data: None).write_text_file("session", "/host/file", "data")
+        await adapter.write_text_file("session", "/host/file", "data")
     await adapter.close_session("session")
     await adapter.close()
 
@@ -129,3 +128,52 @@ async def test_native_antigravity_login_uses_public_authentication_and_selected_
     assert set(profile.credential_files.values()) == {
         "/root/.gemini/antigravity-acp/acp_token.json", "/root/.gemini/antigravity-acp/settings.json",
     }
+
+
+async def test_stdio_callbacks_are_isolated_across_concurrent_adapters():
+    first_updates, second_updates = [], []
+    first = ACPAdapter(Profile(command=["unused"]), first_updates.append)
+    second = ACPAdapter(Profile(command=["unused"]), second_updates.append)
+    command = [sys.executable, str(Path(__file__).parent / "fixtures" / "acp_agent.py")]
+    try:
+        await asyncio.gather(first.connect(command, {}), second.connect(command, {}))
+        await asyncio.gather(first.session(None), second.session(None))
+        await asyncio.gather(first.prompt("fixture-session", "first", 10),
+                             second.prompt("fixture-session", "second", 10))
+        for updates, text in ((first_updates, "first"), (second_updates, "second")):
+            assert [item["params"] for item in updates if item.get("method") == "fixture/status"] == [{"text": text}]
+            assert any(item.get("update", {}).get("sessionUpdate") == "agent_message_chunk" for item in updates)
+            assert {"unsupported_extension": "fixture/unsupported", "parameter_keys": ["private"]} in updates
+            assert "do not echo" not in str(updates)
+        await first.close()
+        assert first.proc.returncode is not None
+        # Closing one transport must leave the other callback receiver usable.
+        await second.prompt("fixture-session", "still connected", 10)
+        assert {"method": "fixture/status", "params": {"text": "still connected"}} in second_updates
+        assert {"method": "fixture/status", "params": {"text": "still connected"}} not in first_updates
+    finally:
+        await asyncio.gather(first.close(), second.close())
+    assert second.proc.returncode is not None
+
+
+@pytest.mark.parametrize("method", [
+    "write_text_file", "read_text_file", "create_terminal", "terminal_output",
+    "release_terminal", "wait_for_terminal_exit", "kill_terminal",
+    "create_elicitation", "complete_elicitation",
+])
+async def test_unadvertised_callbacks_return_request_errors(method):
+    from acp import RequestError
+
+    adapter = ACPAdapter(Profile(command=["unused"]), lambda data: None)
+    with pytest.raises(RequestError):
+        await getattr(adapter, method)(session_id="session")
+
+
+async def test_permission_without_allow_option_fails_explicitly():
+    from acp.schema import PermissionOption, ToolCallUpdate
+
+    adapter = ACPAdapter(Profile(command=["unused"]), lambda data: None)
+    with pytest.raises(HarnessError, match="Agent offered no allow option"):
+        await adapter.request_permission("session", ToolCallUpdate(tool_call_id="call"), [
+            PermissionOption(option_id="deny", name="Reject", kind="reject_once"),
+        ])

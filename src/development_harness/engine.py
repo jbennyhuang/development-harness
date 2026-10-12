@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 
 from .adapters import (
+    AcpAgentAdapter,
     AdapterFactory,
-    CodingHarnessAdapter,
     LaunchContext,
     resolve_adapter_factory,
     usage_exhausted,
@@ -49,7 +49,7 @@ class Engine:
         self.git = git or Git(root, config.target_branch, config.remote)
         self.adapter_factory = adapter_factory
         self.tasks: dict[str, asyncio.Task[None]] = {}
-        self.adapters: dict[str, CodingHarnessAdapter] = {}
+        self.adapters: dict[str, AcpAgentAdapter] = {}
         self.integration_issue: str | None = None
         self.worker_url = ""
         self.stopping = False
@@ -408,7 +408,7 @@ class Engine:
                 self.store.emit("agent.response", {"session": optional_string(data.get("session_id")), "content": update.get("content")}, id, string(a["id"]))
 
         factory = self.adapter_factory or registered_factory
-        adapter: CodingHarnessAdapter | None = None
+        adapter: AcpAgentAdapter | None = None
         env = {"HARNESS_WORKER_TOKEN": token, "HARNESS_WORKER_URL": self.worker_url}
         try:
             adapter = factory(profile, emit)

@@ -6,7 +6,7 @@ import os
 import uuid
 from pathlib import Path
 
-from .adapters import CodingHarnessAdapter, LaunchContext, resolve_adapter_factory
+from .adapters import AcpAgentAdapter, LaunchContext, resolve_adapter_factory
 from .adapters.antigravity import login as login
 from .backend import Docker
 from .config import Config
@@ -80,7 +80,7 @@ async def probe(root: Path, profile_name: str, session: bool) -> JSONObject:
     id = "probe-" + uuid.uuid4().hex
     profile = config.profiles[profile_name]
     diagnostics: list[JSONObject] = []
-    adapter: CodingHarnessAdapter = resolve_adapter_factory(profile.provider)(profile, lambda data: diagnostics.append(data) if len(diagnostics) < 20 else None)
+    adapter: AcpAgentAdapter = resolve_adapter_factory(profile.provider)(profile, lambda data: diagnostics.append(data) if len(diagnostics) < 20 else None)
     try:
         work = await git.prepare(id)
         await backend.prepare(id, await git.bundle(id), string(work["branch"]))
