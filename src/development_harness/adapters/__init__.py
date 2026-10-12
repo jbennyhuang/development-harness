@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from ..config import Profile
+from ..domain import HarnessError
 from ._acp import ACPAdapter, usage_exhausted
 from ._context import LaunchContext
 from .antigravity import AntigravityAdapter
@@ -33,5 +34,14 @@ ADAPTERS: dict[str, AdapterFactory] = {
     "generic": ACPAdapter, "codex": CodexAdapter, "agy": AntigravityAdapter,
 }
 
-__all__ = ["CodingHarnessAdapter", "LaunchContext", "AdapterFactory", "ADAPTERS", "Emit", "Update",
+
+def resolve_adapter_factory(provider: str) -> AdapterFactory:
+    """Validate against the live registry before creating assignments or workers."""
+    factory = ADAPTERS.get(provider)
+    if factory is None:
+        raise HarnessError("unknown_provider", "Coding provider is not registered", provider=provider)
+    return factory
+
+
+__all__ = ["CodingHarnessAdapter", "LaunchContext", "AdapterFactory", "ADAPTERS", "Emit", "Update", "resolve_adapter_factory",
            "ACPAdapter", "CodexAdapter", "AntigravityAdapter", "usage_exhausted"]

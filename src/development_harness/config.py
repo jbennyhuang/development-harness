@@ -21,6 +21,12 @@ class Profile(BaseModel):
     auth_method: str | None = None
     credential_files: dict[str, str] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def registered_provider(self) -> Profile:
+        from .adapters import resolve_adapter_factory
+        resolve_adapter_factory(self.provider)
+        return self
+
 
 def default_profiles() -> dict[str, Profile]:
     # Import after Profile is defined so providers can own their launch defaults.

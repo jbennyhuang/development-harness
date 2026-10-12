@@ -469,3 +469,10 @@ preserving files and issue context. Pyright checks all production source through
 a locked uv development dependency, alongside Ruff and pytest in both CI platforms.
 No automatic self-update is introduced; live provider/host verification remains
 separate from controlled regression evidence.
+
+Provider keys are validated against the live `ADAPTERS` registry, without a
+separate enum. Unknown keys fail with a structured `unknown_provider` error during
+profile/configuration validation and before pool creation, issue binding or worker
+dispatch. Defensive engine checks also cover profiles mutated after validation or
+factories removed from the registry. Registered third-party factories follow the
+same lifecycle without an engine override.

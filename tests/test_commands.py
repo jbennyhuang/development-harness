@@ -54,3 +54,18 @@ async def test_interrupted_create_is_reconciled_without_duplicate_issue(engine):
     result = await commands.invoke("command reconcile", {"idempotency_key": "interrupted"})
     assert result == first and len(await engine.tracker.list()) == 1
     assert (await commands.invoke("command inspect", {"idempotency_key": "interrupted"}))["state"] == "done"
+
+
+async def test_config_update_rejects_provider_typo_without_saving_or_assigning(engine):
+    engine.config.save(engine.root)
+    path = engine.root / ".harness/config.json"
+    saved = path.read_bytes()
+    original = engine.config
+    with pytest.raises(HarnessError) as error:
+        await Commands(engine).invoke("config update", {"changes": {"profiles": {
+            "codex": {"provider": "codxe", "command": ["unused"]},
+        }}})
+    assert error.value.code == "unknown_provider"
+    assert engine.config is original and path.read_bytes() == saved
+    assert engine.agents() == [] and engine.executions() == []
+    assert not engine.tasks and not engine.adapters

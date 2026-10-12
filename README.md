@@ -136,7 +136,11 @@ The engine closes transports at turn boundaries while retaining issue sessions.
 To add a provider, implement those methods in a new module, without needing to
 subclass `ACPAdapter`. Register a `(Profile, emit) -> CodingHarnessAdapter` factory
 in `ADAPTERS`, then configure a profile with that provider key and command/auth
-settings. An embedding application can also inject `Engine(adapter_factory=...)`.
+settings. Unregistered provider keys raise the structured `unknown_provider` error
+before assignments or worker startup; registration in `ADAPTERS` is the only
+provider-key allowlist. Profiles are checked during configuration validation, and
+the engine rechecks the registry before binding and dispatch. An embedding
+application can also inject `Engine(adapter_factory=...)`.
 Add a structural conformance assignment and lifecycle tests; run Pyright, Ruff,
 and pytest. JSON payload mappings remain extensible for negotiated provider data.
 

@@ -9,7 +9,13 @@ import time
 import uuid
 from pathlib import Path
 
-from .adapters import ADAPTERS, AdapterFactory, CodingHarnessAdapter, LaunchContext, usage_exhausted
+from .adapters import (
+    AdapterFactory,
+    CodingHarnessAdapter,
+    LaunchContext,
+    resolve_adapter_factory,
+    usage_exhausted,
+)
 from .backend import Backend, Docker
 from .config import Config
 from .domain import HarnessError, Result, Stage
@@ -57,6 +63,7 @@ class Engine:
     def create_agent(self, role: str, profile: str, id: str | None = None) -> dict:
         if role not in ("developer", "reviewer") or profile not in self.config.profiles:
             raise HarnessError("invalid_agent", "Unknown role or profile")
+        resolve_adapter_factory(self.config.profiles[profile].provider)
         active = [a for a in self.agents() if a["state"] != "stopped"]
         if len(active) >= self.config.max_agents:
             raise HarnessError("agent_limit", "Configured managed-agent cap reached")
@@ -72,7 +79,12 @@ class Engine:
         self.store.emit("agent.created", {"role": role, "profile": profile}, agent_id=id)
         return a
 
+    def validate_providers(self) -> None:
+        for profile in self.config.profiles.values():
+            resolve_adapter_factory(profile.provider)
+
     def ensure_pool(self) -> None:
+        self.validate_providers()
         for role, count in (("developer", self.config.developers), ("reviewer", self.config.reviewers)):
             profile = "codex" if role == "developer" else "agy"
             if profile not in self.config.profiles:
@@ -82,6 +94,10 @@ class Engine:
                 self.create_agent(role, profile)
 
     def bind(self, a: dict, e: dict) -> None:
+        profile = self.config.profiles.get(a["profile"])
+        if profile is None:
+            raise HarnessError("invalid_agent", "Unknown agent profile")
+        resolve_adapter_factory(profile.provider)
         if a.get("issue_id") and a["issue_id"] != e["id"]:
             raise HarnessError("agent_locked", "Agent is already locked to another issue")
         with self.store.transaction():
@@ -186,6 +202,7 @@ class Engine:
         self.last_sync = time.monotonic()
 
     async def tick(self) -> None:
+        self.validate_providers()
         for id, task in list(self.tasks.items()):
             if task.done():
                 with contextlib.suppress(asyncio.CancelledError):
@@ -343,6 +360,7 @@ class Engine:
         role = "developer" if stage == Stage.DEVELOPING else "reviewer"
         a = self.store.require("agent", e[role])
         profile = self.config.profiles[a["profile"]]
+        registered_factory = resolve_adapter_factory(profile.provider)
         # A new scoped credential per turn rejects late submissions from obsolete processes.
         token = secrets.token_urlsafe(32)
         e["generation"] += 1
@@ -377,7 +395,7 @@ class Engine:
             if update.get("sessionUpdate") == "agent_message_chunk":
                 self.store.emit("agent.response", {"session": data.get("session_id"), "content": update.get("content")}, id, a["id"])
 
-        factory = self.adapter_factory or ADAPTERS[profile.provider]
+        factory = self.adapter_factory or registered_factory
         adapter: CodingHarnessAdapter | None = None
         env = {"HARNESS_WORKER_TOKEN": token, "HARNESS_WORKER_URL": self.worker_url}
         try:
