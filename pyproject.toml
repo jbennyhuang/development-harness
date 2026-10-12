@@ -1,6 +1,6 @@
 [project]
 name = "development-harness"
-version = "0.1.3"
+version = "0.1.4"
 description = "A durable CLI for isolated ACP development and review workflows"
 readme = "README.md"
 authors = [
@@ -42,5 +42,5 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.pyright]
 include = ["src", "tests/adapter_contract.py"]
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"
 pythonVersion = "3.14"

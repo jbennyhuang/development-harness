@@ -74,7 +74,7 @@ def test_provider_owned_defaults_remain_compatible():
 async def test_not_started_and_unadvertised_client_capabilities_fail_explicitly():
     from acp import RequestError
 
-    from development_harness.adapters._acp import ACPClient
+    from development_harness.adapters import ACPClient
 
     adapter = ACPAdapter(Profile(command=["unused"]), lambda data: None)
     with pytest.raises(HarnessError, match="Start the adapter"):

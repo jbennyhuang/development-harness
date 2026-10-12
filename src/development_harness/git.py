@@ -4,11 +4,12 @@ import hashlib
 from pathlib import Path
 
 from .domain import HarnessError
+from .json_types import JSONObject, optional_string, string
 from .process import run
 
 
 class Git:
-    def __init__(self, root: Path, target: str = "main", remote: str | None = "origin"):
+    def __init__(self, root: Path, target: str = "main", remote: str | None = "origin") -> None:
         self.root, self.target, self.remote = root, target, remote
         self.state = root / ".harness"
         self.workspaces = self.state / "workspaces"
@@ -49,7 +50,7 @@ class Git:
         if ".harness/" not in current.splitlines():
             ignore.write_text(current.rstrip() + "\n.harness/\n")
 
-    async def latest(self) -> dict:
+    async def latest(self) -> JSONObject:
         """Fetch remote state without changing any developer checkout or refs."""
         local = await self.oid("refs/heads/" + self.target)
         remote_oid = None
@@ -61,7 +62,7 @@ class Git:
                 remote_oid = await self.oid(f"refs/remotes/{self.remote}/{self.target}")
         return {"local": local, "remote": remote_oid, "target": self.target}
 
-    async def prepare(self, id: str) -> dict:
+    async def prepare(self, id: str) -> JSONObject:
         self.workspaces.mkdir(parents=True, exist_ok=True)
         self.artifacts.mkdir(parents=True, exist_ok=True)
         path, branch = self.workspace(id), self.branch(id)
@@ -102,7 +103,7 @@ class Git:
         code, _, _ = await self.call("merge-base", "--is-ancestor", before, after, check=False)
         return code == 0
 
-    async def validate_merge_candidate(self, candidate: str, base: str, target: dict) -> None:
+    async def validate_merge_candidate(self, candidate: str, base: str, target: JSONObject) -> None:
         actual = await self.oid(candidate)
         parent = await self.oid(candidate + "^")
         if actual != candidate or parent != base:
@@ -110,10 +111,10 @@ class Git:
         _, parents, _ = await self.call("rev-list", "--parents", "-n", "1", candidate)
         if len(parents.split()) != 2:
             raise HarnessError("invalid_candidate", "The final issue commit must have exactly one parent")
-        for oid in (target["local"], target.get("remote")):
+        for oid in (string(target["local"]), optional_string(target.get("remote"))):
             if oid and not await self.ancestor(oid, base):
                 raise HarnessError("invalid_base", "Candidate base omits local or remote target history")
-        local, remote = target["local"], target.get("remote")
+        local, remote = string(target["local"]), optional_string(target.get("remote"))
         if not remote or await self.ancestor(remote, local):
             expected_base = local
         elif await self.ancestor(local, remote):
@@ -166,7 +167,7 @@ class Git:
             await self.call("branch", "-D", branch)
         await self.call("update-ref", "-d", "refs/harness/candidates/" + self.slug(id))
 
-    async def snapshot(self, id: str) -> dict:
+    async def snapshot(self, id: str) -> JSONObject:
         path = self.workspace(id)
         _, status, _ = await self.call("status", "--porcelain", cwd=path)
         return {"commit": await self.oid("HEAD", path), "dirty": bool(status)}

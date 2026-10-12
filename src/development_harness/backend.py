@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -11,6 +10,7 @@ from typing import Protocol
 from .config import Config, Profile
 from .domain import HarnessError
 from .git import Git
+from .json_types import JSONObject, decode, json_object, objects
 from .process import run
 
 
@@ -18,7 +18,7 @@ class Backend(Protocol):
     async def credentials(self, id: str, profile: Profile) -> None: ...
     async def prepare(self, id: str, bundle: Path, branch: str) -> None: ...
     async def export(self, id: str) -> Path: ...
-    async def validate(self, id: str, bundle: Path) -> list[dict]: ...
+    async def validate(self, id: str, bundle: Path) -> list[JSONObject]: ...
     async def refresh(self, id: str, bundle: Path) -> None: ...
     async def quiesce(self, id: str) -> None: ...
     async def cleanup(self, id: str) -> None: ...
@@ -28,18 +28,18 @@ class Backend(Protocol):
 class Docker:
     """Containers contain isolated Git repositories; no host directory is mounted."""
 
-    def __init__(self, root: Path, config: Config):
+    def __init__(self, root: Path, config: Config) -> None:
         self.root, self.config = root, config
         self.project = hashlib.sha256(str(root).encode()).hexdigest()[:12]
 
     def name(self, id: str) -> str:
         return "harness-" + self.project + "-" + Git.slug(id)
 
-    async def inspect(self, name: str) -> dict | None:
+    async def inspect(self, name: str) -> JSONObject | None:
         code, out, _ = await run(["docker", "inspect", name], check=False)
         if code:
             return None
-        return json.loads(out)[0]
+        return objects(decode(out))[0]
 
     async def create(self, name: str) -> None:
         await run(["docker", "run", "--detach", "--name", name,
@@ -63,9 +63,9 @@ class Docker:
         name = self.name(id)
         container = await self.inspect(name)
         if container:
-            if container.get("Config", {}).get("Labels", {}).get("harness.project") != self.project:
+            if json_object(json_object(container.get("Config", {})).get("Labels", {})).get("harness.project") != self.project:
                 raise HarnessError("unowned_container", "Container is owned by another project")
-            if not container["State"]["Running"]:
+            if not json_object(container["State"])["Running"]:
                 await run(["docker", "start", name])
             code, _, _ = await self.exec(name, ["git", "rev-parse", "--verify", "HEAD"], check=False)
             if not code:
@@ -125,20 +125,20 @@ class Docker:
         finally:
             await self.finish_quiesce(id)
 
-    async def validate(self, id: str, bundle: Path) -> list[dict]:
+    async def validate(self, id: str, bundle: Path) -> list[JSONObject]:
         name = self.name(id) + "-validation"
         old = await self.inspect(name)
         if old:
             await self.remove(name)
         await self.create(name)
-        results = []
+        results: list[JSONObject] = []
         try:
             await run(["docker", "cp", str(bundle), name + ":/tmp/candidate.bundle"])
             await self.exec(name, ["git", "clone", "--branch", Git(self.root).branch(id),
                                    "/tmp/candidate.bundle", "/workspace"])
             for argv in self.config.validation_commands:
                 code, out, err = await self.exec(name, argv, check=False)
-                results.append({"command": argv, "returncode": code, "stdout": out, "stderr": err})
+                results.append({"command": [word for word in argv], "returncode": code, "stdout": out, "stderr": err})
                 if code:
                     break
             return results
@@ -180,7 +180,7 @@ class Docker:
             except Exception as exc:
                 raise HarnessError("quiesce_failed", "Could not stop issue container; retry is unsafe") from exc
             container = await self.inspect(name)
-            if container and container["State"]["Running"]:
+            if container and json_object(container["State"])["Running"]:
                 raise HarnessError("quiesce_failed", "Issue container is still running")
         validation = name + "-validation"
         if await self.inspect(validation):
@@ -188,7 +188,7 @@ class Docker:
 
     async def remove(self, name: str) -> None:
         container = await self.inspect(name)
-        if container and container.get("Config", {}).get("Labels", {}).get("harness.project") != self.project:
+        if container and json_object(json_object(container.get("Config", {})).get("Labels", {})).get("harness.project") != self.project:
             raise HarnessError("unowned_container", "Refusing to delete a container owned by another project")
         if container:
             await run(["docker", "rm", "--force", name])

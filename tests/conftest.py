@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from development_harness.adapters import CodingHarnessAdapter
 from development_harness.config import Config
 from development_harness.engine import Engine
 from development_harness.git import Git
@@ -103,8 +104,9 @@ class IsolatedTestBackend:
         return [id]
 
 
-class FixtureAdapter:
+class FixtureAdapter(CodingHarnessAdapter):
     def __init__(self, engine, profile, emit):
+        super().__init__(profile, emit)
         self.engine, self.emit = engine, emit
         self.env = {}
         self.session_calls = []
@@ -116,6 +118,9 @@ class FixtureAdapter:
 
     async def close_session(self, session_id):
         pass
+
+    async def setup(self, context):
+        return []
 
     async def start(self, context):
         return await self.connect([], context.env)

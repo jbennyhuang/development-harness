@@ -1,3 +1,5 @@
+from .json_types import JSONObject, JSONValue, optional_string, string
+
 ORCHESTRATOR = """You are the project orchestrator. Coordinate exclusively through harness CLI commands.
 Use --json for machine-readable results and --project to select the repository.
 Start with harness inspect and harness instructions. Use harness schema for command definitions.
@@ -17,18 +19,18 @@ Source merges do not replace the installed running service. Use backup and expli
 """
 
 
-def worker_prompt(execution: dict, issue: dict, role: str, stage: str, target: dict | None,
-                  history: str = "", messages: list | None = None) -> str:
+def worker_prompt(execution: JSONObject, issue: JSONObject, role: str, stage: str, target: JSONObject | None,
+                  history: str = "", messages: list[JSONValue] | None = None) -> str:
     import json
 
     context = {
         "issue": issue,
         "stage": stage,
         "role": role,
-        "issue_branch": execution["branch"],
-        "candidate": execution.get("candidate"),
+        "issue_branch": string(execution["branch"]),
+        "candidate": optional_string(execution.get("candidate")),
         "latest_target": target,
-        "feedback": execution.get("feedback", ""),
+        "feedback": string(execution.get("feedback", "")),
         "messages": messages or [],
     }
     preparation = ""

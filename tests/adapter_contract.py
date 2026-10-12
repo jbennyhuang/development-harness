@@ -1,11 +1,14 @@
-"""A third-party adapter: no ACP dependency or base class."""
+"""Strict-checked third-party ABC extension, including its own constructor/members."""
+from typing import override
+
 from development_harness.adapters import CodingHarnessAdapter, Emit, LaunchContext, Update
 from development_harness.config import Profile
 from development_harness.engine import Engine
 
 
-class ThirdPartyAdapter:
-    def __init__(self, engine: Engine, profile: Profile, emit: Emit):
+class ThirdPartyAdapter(CodingHarnessAdapter):
+    def __init__(self, engine: Engine, profile: Profile, emit: Emit) -> None:
+        super().__init__(profile, emit)
         self.engine, self.emit = engine, emit
         self.capabilities: Update = {"provider": "third-party"}
         self.context: LaunchContext | None = None
@@ -13,17 +16,25 @@ class ThirdPartyAdapter:
         self.prompts: list[str] = []
         self.restores: list[str | None] = []
 
+    @override
+    async def setup(self, context: LaunchContext) -> list[str]:
+        return ["third-party-worker"]
+
+    @override
     async def start(self, context: LaunchContext) -> Update:
         self.context = context
         return self.capabilities
 
+    @override
     async def authenticate(self, method_id: str, timeout: int = 60) -> None:
         pass
 
+    @override
     async def session(self, existing: str | None, history: str = "") -> tuple[str, bool]:
         self.restores.append(existing)
         return existing or "third-party-session", bool(existing)
 
+    @override
     async def prompt(self, session_id: str, text: str, timeout: int) -> Update:
         assert self.context is not None
         self.prompts.append(text)
@@ -35,15 +46,24 @@ class ThirdPartyAdapter:
         })
         return {"stopReason": "end_turn"}
 
+    @override
     async def cancel(self, session_id: str) -> None:
         pass
 
+    @override
     async def close_session(self, session_id: str) -> None:
         pass
 
+    @override
     async def close(self) -> None:
         self.closed = True
 
 
-def structural_contract(adapter: ThirdPartyAdapter) -> CodingHarnessAdapter:
+def subclass_contract(adapter: ThirdPartyAdapter) -> CodingHarnessAdapter:
     return adapter
+
+
+def retains_subclass_members(adapter: ThirdPartyAdapter) -> list[str]:
+    engine: Engine = adapter.engine
+    assert engine is adapter.engine
+    return adapter.prompts

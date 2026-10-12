@@ -1,6 +1,6 @@
 """A durable, project-local CLI development harness."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 
 def main() -> None:

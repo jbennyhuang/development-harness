@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.3-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.4-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -114,35 +114,53 @@ At every ACP turn boundary the host revokes the scoped credential, closes the ad
 
 ## Adapter package and extension
 
-`src/development_harness/adapters/__init__.py` exports the structural Python
-`CodingHarnessAdapter` protocol, `LaunchContext`, `AdapterFactory`, and `ADAPTERS`.
-`codex.py` owns Codex launch defaults and container credential/start integration;
-`antigravity.py` owns Antigravity launch defaults, container startup, and native OAuth
-bootstrap. `_acp.py` shares ACP negotiation, permissions, structured updates,
-authentication, restore/fallback, mode/model selection, quota detection and bounded
-transport teardown. `_context.py` defines the launch data shared by providers.
+`src/development_harness/adapters/__init__.py` contains the abstract
+`CodingHarnessAdapter` base, shared ACP lifecycle, `LaunchContext`, typed
+`AdapterFactory`, and `ADAPTERS` registry. `Codex` in `codex.py` and `Antigravity`
+in `antigravity.py` subclass the base and own launch defaults and credential setup.
+Antigravity also owns the native OAuth bootstrap. `GenericACPAdapter` supports
+configured ACP commands; `ACPAdapter`, `CodexAdapter`, and `AntigravityAdapter`
+remain compatibility aliases.
 
-The public protocol has a read-only `capabilities` mapping and async methods:
-`start(context)`, `authenticate(method_id, timeout=60)`,
+The public lifecycle is `start(context)`, `authenticate(method_id, timeout=60)`,
 `session(existing, history="") -> (session_id, restored)`,
 `prompt(session_id, text, timeout)`, `cancel(session_id)`,
-`close_session(session_id)`, and `close()`. `start` returns negotiated capabilities;
-`prompt` returns the provider result mapping. `session` reports whether native
-restore succeeded; the engine supplies recorded context in the next prompt when
-it did not. Authentication may be a no-op for providers that do not need it.
-Session close may be a no-op when unsupported; transport close must be bounded.
-The engine closes transports at turn boundaries while retaining issue sessions.
+`close_session(session_id)`, and `close()`. The base stores negotiated
+`capabilities`; `start` returns them and `prompt` returns the provider result.
+Startup calls the abstract `setup(context)` hook, then connects with ACP v1.
+Session setup authenticates when configured, attempts native restoration when
+advertised, and selects mode/model. The engine supplies recorded history in the
+next prompt when native restoration is unavailable. Session close is conditional
+on advertised support; transport cancellation and close are bounded. The engine
+closes transports at turn boundaries while retaining issue sessions.
 
-To add a provider, implement those methods in a new module, without needing to
-subclass `ACPAdapter`. Register a `(Profile, emit) -> CodingHarnessAdapter` factory
-in `ADAPTERS`, then configure a profile with that provider key and command/auth
-settings. Unregistered provider keys raise the structured `unknown_provider` error
-before assignments or worker startup; registration in `ADAPTERS` is the only
-provider-key allowlist. Profiles are checked during configuration validation, and
-the engine rechecks the registry before binding and dispatch. An embedding
-application can also inject `Engine(adapter_factory=...)`.
-Add a structural conformance assignment and lifecycle tests; run Pyright, Ruff,
-and pytest. JSON payload mappings remain extensible for negotiated provider data.
+To add an ACP provider, subclass the base and implement one typed hook:
+
+```python
+from typing import override
+from development_harness.adapters import ADAPTERS, CodingHarnessAdapter, LaunchContext
+
+class CustomAgent(CodingHarnessAdapter):
+    @override
+    async def setup(self, context: LaunchContext) -> list[str]:
+        await context.backend.credentials(context.issue_id, self.profile)
+        return context.backend.agent_command(context.issue_id, self.profile, context.env)
+
+ADAPTERS["custom"] = CustomAgent
+```
+
+Register before constructing a `Profile(provider="custom", command=[...])`.
+Subclasses may define their own constructors and members; a registry factory must
+accept `(Profile, Emit)` and return a `CodingHarnessAdapter`. An embedding
+application can also inject `Engine(adapter_factory=...)`. Unregistered keys
+raise `unknown_provider` during configuration validation and before pool creation,
+binding, or dispatch, including profiles mutated after validation.
+
+Pyright checks every production module and the subclass conformance fixture in
+strict mode. Recursive JSON values and runtime narrowing contain journal, HTTP,
+CLI and SDK data at their boundaries. Add subclass contract and lifecycle tests;
+run Ruff, Pyright, pytest, lock validation and package builds. The contract tests
+also verify that incompatible provider overrides are rejected by Pyright.
 
 `LaunchContext` contains the prepared issue's backend, issue ID, scoped environment,
 and workspace. Adapters use `Backend.credentials` for explicitly selected credential
@@ -150,4 +168,4 @@ copies and `Backend.agent_command` for a fenced container subprocess command.
 The harness/backend retain container ownership checks, isolation/resource policy,
 Git bundles, credential revocation, cancellation-shielded shutdown, quiescence and
 cleanup. Provider modules must use these facilities rather than bypass them.
-Pyright checks all production source in basic mode; Ruff remains the lint check.
+Pyright checks all production source and the adapter conformance fixture in strict mode; Ruff remains the lint check.

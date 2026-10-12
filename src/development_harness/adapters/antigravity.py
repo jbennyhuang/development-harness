@@ -6,27 +6,28 @@ import platform
 import sys
 import zipfile
 from pathlib import Path
+from typing import override
 
 import httpx
 
 from ..config import Config, Profile
 from ..domain import HarnessError
+from ..json_types import JSONObject, string
 from ..process import run
-from ._acp import ACPAdapter
-from ._context import LaunchContext
+from . import CodingHarnessAdapter, LaunchContext
 
 
-class AntigravityAdapter(ACPAdapter):
+class Antigravity(CodingHarnessAdapter):
     """Antigravity ACP launch with fenced copies of the native OAuth cache."""
 
-    async def start(self, context: LaunchContext) -> dict:
-        self.workspace = context.workspace
+    @override
+    async def setup(self, context: LaunchContext) -> list[str]:
         await context.backend.credentials(context.issue_id, self.profile)
         command = context.backend.agent_command(context.issue_id, self.profile, context.env)
-        return await self.connect(command, context.env)
+        return command
 
 
-async def login(root: Path, profile_name: str):
+async def login(root: Path, profile_name: str) -> JSONObject:
     config = Config.load(root)
     if profile_name not in config.profiles or config.profiles[profile_name].provider != "agy":
         raise HarnessError("login_configuration", "This OAuth bootstrap supports Antigravity profiles; configure Codex auth files or API-key env_names separately")
@@ -63,12 +64,12 @@ async def login(root: Path, profile_name: str):
         account = os.environ.get("USERDOMAIN", ".") + "\\" + os.environ["USERNAME"]
         await run(["icacls", str(cache), "/inheritance:r", "/grant:r", account + ":(OI)(CI)(F)"])
 
-    def emit(data):
-        diagnostic = data.get("diagnostic", "")
+    def emit(data: JSONObject) -> None:
+        diagnostic = string(data.get("diagnostic", ""))
         if "Open the following link" in diagnostic:
             print(diagnostic, file=sys.stderr, end="", flush=True)
         elif data.get("unsupported_extension"):
-            print("Authentication helper requested unsupported extension: " + data["unsupported_extension"], file=sys.stderr)
+            print("Authentication helper requested unsupported extension: " + string(data["unsupported_extension"]), file=sys.stderr)
 
     profile = config.profiles[profile_name]
     adapter = AntigravityAdapter(profile.model_copy(update={"auth_method": None, "mode": None, "model": None}), emit)
@@ -97,3 +98,6 @@ async def login(root: Path, profile_name: str):
 def default_profile() -> Profile:
     """Pinned container helper; Linux uses an empty UID for the isolated root user."""
     return Profile(provider="agy", command=["/opt/agy/agy_acp_server.par", "--uid="])
+
+
+AntigravityAdapter = Antigravity

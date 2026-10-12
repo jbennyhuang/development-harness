@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__
+from .json_types import decode_object, integer
 
 STATE_DIR = ".harness"
 
@@ -55,7 +55,7 @@ class Config(BaseModel):
     container_memory: str = "4g"
     bd_command: list[str] = Field(default_factory=lambda: ["bd"])
     tool_paths: list[str] = Field(default_factory=list)
-    validation_commands: list[list[str]] = Field(default_factory=list)
+    validation_commands: list[list[str]] = Field(default_factory=lambda: [])
     profiles: dict[str, Profile] = Field(
         default_factory=default_profiles
     )
@@ -64,7 +64,7 @@ class Config(BaseModel):
     def valid_pools(self) -> Config:
         if self.developers + self.reviewers > self.max_agents:
             raise ValueError("Developer and reviewer targets exceed max_agents")
-        if any(not command or not all(isinstance(x, str) and x for x in command)
+        if any(not command or not all(x for x in command)
                for command in self.validation_commands):
             raise ValueError("Validation commands must be non-empty argv arrays")
         if not self.target_branch or self.target_branch.startswith("-"):
@@ -74,13 +74,13 @@ class Config(BaseModel):
     @classmethod
     def load(cls, root: Path) -> Config:
         path = root / STATE_DIR / "config.json"
-        data = json.loads(path.read_text()) if path.exists() else {}
+        data = decode_object(path.read_text()) if path.exists() else {}
         if "HARNESS_MAX_AGENTS" in os.environ:
             cap = int(os.environ["HARNESS_MAX_AGENTS"])
             data["max_agents"] = cap
             # Preserve at least one reviewer when a smaller override is supplied.
-            data["reviewers"] = min(data.get("reviewers", 2), max(1, cap // 2))
-            data["developers"] = min(data.get("developers", 2), cap - data["reviewers"])
+            data["reviewers"] = min(integer(data.get("reviewers", 2)), max(1, cap // 2))
+            data["developers"] = min(integer(data.get("developers", 2)), cap - integer(data["reviewers"]))
         return cls.model_validate(data)
 
     def save(self, root: Path) -> None:

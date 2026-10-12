@@ -12,16 +12,17 @@ from .backend import Docker
 from .config import Config
 from .domain import HarnessError
 from .git import Git
+from .json_types import JSONObject, json_value, string
 from .process import run
 
 
-async def setup_tools(root: Path):
+async def setup_tools(root: Path) -> JSONObject:
     config = Config.load(root)
     state = root / ".harness"
     env = {**os.environ, "MISE_DATA_DIR": str(state / "tool-cache")}
     tools = [("github:gastownhall/beads", "1.3.1"), ("github:dolthub/dolt", "2.4.2")]
     tools.append(("go", "1.27.2") if os.name == "nt" else ("github:zjrosen/perles", "0.8.97"))
-    paths = []
+    paths: list[str] = []
     for tool, version in tools:
         await run(["mise", "install", tool + "@" + version], root, env=env, timeout=900)
         _, out, _ = await run(["mise", "where", tool + "@" + version], root, env=env)
@@ -43,11 +44,11 @@ async def setup_tools(root: Path):
             paths += [str(bin_dir)]
     config.tool_paths = list(dict.fromkeys([*paths, *config.tool_paths]))
     config.save(root)
-    return {"tools": [tool + "@" + version for tool, version in tools], "tool_paths": config.tool_paths,
+    return {"tools": [tool + "@" + version for tool, version in tools], "tool_paths": [path for path in config.tool_paths],
             "perles": "Built pinned upstream source for Windows" if os.name == "nt" else "Pinned release binary"}
 
 
-async def build_image(root: Path):
+async def build_image(root: Path) -> JSONObject:
     config = Config.load(root)
     context = root / ".harness" / "image-build"
     context.mkdir(parents=True, exist_ok=True)
@@ -71,27 +72,27 @@ async def build_image(root: Path):
     return {"image": config.image, "context": str(context)}
 
 
-async def probe(root: Path, profile_name: str, session: bool):
+async def probe(root: Path, profile_name: str, session: bool) -> JSONObject:
     config = Config.load(root)
     if profile_name not in config.profiles:
         raise HarnessError("unknown_profile", profile_name)
     git, backend = Git(root, config.target_branch, config.remote), Docker(root, config)
     id = "probe-" + uuid.uuid4().hex
     profile = config.profiles[profile_name]
-    diagnostics = []
+    diagnostics: list[JSONObject] = []
     adapter: CodingHarnessAdapter = resolve_adapter_factory(profile.provider)(profile, lambda data: diagnostics.append(data) if len(diagnostics) < 20 else None)
     try:
         work = await git.prepare(id)
-        await backend.prepare(id, await git.bundle(id), work["branch"])
+        await backend.prepare(id, await git.bundle(id), string(work["branch"]))
         caps = await adapter.start(LaunchContext(backend, id, {}))
-        result = {"profile": profile_name, "capabilities": caps, "prompt_verified": False}
+        result: JSONObject = {"profile": profile_name, "capabilities": caps, "prompt_verified": False}
         if session:
             session_id, _ = await asyncio.wait_for(adapter.session(None), 45)
             result["session_created"] = bool(session_id)
         return result
     except Exception as exc:
         raise HarnessError("provider_probe_failed", str(exc), capabilities=adapter.capabilities,
-                           diagnostics=diagnostics, prompt_verified=False) from exc
+                           diagnostics=json_value(diagnostics), prompt_verified=False) from exc
     finally:
         await adapter.close()
         await backend.cleanup(id)

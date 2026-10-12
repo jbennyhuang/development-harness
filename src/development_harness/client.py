@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -10,31 +9,32 @@ from pathlib import Path
 import httpx
 
 from .domain import HarnessError
+from .json_types import JSONObject, decode_object, json_object, string
 from .service import state_directory
 
 
-def metadata(root):
+def metadata(root: Path) -> JSONObject | None:
     try:
-        return json.loads((root / ".harness" / "service.json").read_text(encoding="utf-8"))
+        return decode_object((root / ".harness" / "service.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def request(info, path, body=None, timeout=30):
-    url = info["url"]
+def request(info: JSONObject, path: str, body: JSONObject | None=None, timeout: float=30) -> JSONObject:
+    url = string(info["url"])
     if not url.startswith("http://127.0.0.1:"):
         raise HarnessError("invalid_service", "Service must be on host loopback")
     with httpx.Client(trust_env=False, timeout=timeout) as client:
-        headers = {"Authorization": "Bearer " + info["token"]}
+        headers = {"Authorization": "Bearer " + string(info["token"])}
         response = client.get(url + path, headers=headers) if body is None else client.post(url + path, json=body, headers=headers)
-        envelope = response.json()
+        envelope = json_object(response.json())
         if not envelope["ok"]:
-            error = envelope["error"]
-            raise HarnessError(error["code"], error["message"], **error.get("details", {}))
-        return envelope["result"]
+            error = json_object(envelope["error"])
+            raise HarnessError(string(error["code"]), string(error["message"]), **json_object(error.get("details", {})))
+        return json_object(envelope["result"])
 
 
-def status(root):
+def status(root: Path) -> JSONObject:
     info = metadata(root)
     if info:
         try:
@@ -44,9 +44,11 @@ def status(root):
     return {"running": False, "project": str(root)}
 
 
-def start(root: Path):
+def start(root: Path) -> JSONObject:
     if status(root).get("pid"):
-        return metadata(root)
+        info = metadata(root)
+        assert info is not None
+        return info
     state = state_directory(root)
     flags = 0
     if os.name == "nt":
@@ -68,6 +70,6 @@ def start(root: Path):
     raise HarnessError("service_start_failed", "Service did not become ready; inspect .harness/service.log")
 
 
-def invoke(root, command, args, key=None):
+def invoke(root: Path, command: str, args: JSONObject, key: str | None=None) -> JSONObject:
     info = start(root)
     return request(info, "/command", {"command": command, "args": args, "key": key}, timeout=1800)

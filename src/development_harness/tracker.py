@@ -5,58 +5,67 @@ from pathlib import Path
 from typing import Protocol
 
 from .domain import HarnessError
+from .json_types import (
+    JSONObject,
+    decode,
+    json_object,
+    json_value,
+    objects,
+    optional_string,
+    string,
+)
 from .process import run
 
 
 class Tracker(Protocol):
-    async def create(self, title: str, description: str, acceptance: str, priority: int, key: str) -> dict: ...
-    async def read(self, id: str) -> dict: ...
-    async def list(self) -> list[dict]: ...
-    async def ready(self) -> list[dict]: ...
-    async def update(self, id: str, changes: dict) -> dict: ...
-    async def close(self, id: str, reason: str) -> dict: ...
-    async def delete(self, id: str) -> dict: ...
-    async def dependency(self, id: str, depends_on: str, remove: bool = False) -> dict: ...
+    async def create(self, title: str, description: str, acceptance: str, priority: int, key: str) -> JSONObject: ...
+    async def read(self, id: str) -> JSONObject: ...
+    async def list(self) -> list[JSONObject]: ...
+    async def ready(self) -> list[JSONObject]: ...
+    async def update(self, id: str, changes: JSONObject) -> JSONObject: ...
+    async def close(self, id: str, reason: str) -> JSONObject: ...
+    async def delete(self, id: str) -> JSONObject: ...
+    async def dependency(self, id: str, depends_on: str, remove: bool = False) -> JSONObject: ...
 
 
-def revision(issue: dict) -> str:
+def revision(issue: JSONObject) -> str:
     import hashlib
     # Assignee/status changes made by the scheduler are not specification revisions.
     fields = {k: issue.get(k) for k in ("title", "description", "acceptance_criteria")}
-    fields["dependencies"] = sorted(
+    fields["dependencies"] = json_value(sorted(
         (d.get("id") or d.get("depends_on_id"), d.get("dependency_type") or d.get("type", "blocks"))
-        for d in issue.get("dependencies", [])
-    )
+        for d in objects(issue.get("dependencies", []))
+    ))
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
 class Beads:
-    def __init__(self, root: Path, command: list[str]):
+    def __init__(self, root: Path, command: list[str]) -> None:
         self.root, self.command = root, command
 
-    async def call(self, *args: str) -> dict | list[dict]:
+    async def call(self, *args: str) -> JSONObject | list[JSONObject]:
         _, out, _ = await run([*self.command, *args, "--json"], self.root)
         try:
-            result = json.loads(out)
+            result = decode(out)
             if not isinstance(result, (dict, list)):
                 raise HarnessError("invalid_beads_output", "Beads must return an object or list")
-            return result
-        except json.JSONDecodeError as exc:
-            raise HarnessError("invalid_beads_output", "Beads did not return JSON") from exc
+            return json_object(result) if isinstance(result, dict) else objects(result)
+        except ValueError as exc:
+            raise HarnessError("invalid_beads_output", "Beads did not return valid JSON objects") from exc
 
-    async def create(self, title: str, description: str, acceptance: str, priority: int, key: str) -> dict:
+    async def create(self, title: str, description: str, acceptance: str, priority: int, key: str) -> JSONObject:
         # External references allow reconciliation after a lost create response.
         ref = "harness:" + key
         existing = await self.list()
         for issue in existing:
-            if issue.get("external_ref") == ref:
+            if optional_string(issue.get("external_ref")) == ref:
                 return issue
         result = await self.call("create", "--title", title, "--description", description,
                                  "--acceptance", acceptance, "--priority", str(priority),
                                  "--external-ref", ref)
         return result[0] if isinstance(result, list) else result
 
-    async def read(self, id: str) -> dict:
+    async def read(self, id: str) -> JSONObject:
         result = await self.call("show", id)
         if isinstance(result, list):
             if not result:
@@ -64,18 +73,18 @@ class Beads:
             return result[0]
         return result
 
-    async def list(self) -> list[dict]:
+    async def list(self) -> list[JSONObject]:
         result = await self.call("list", "--all", "--limit", "0")
-        issues = result if isinstance(result, list) else result.get("issues", [])
+        issues = result if isinstance(result, list) else objects(result.get("issues", []))
         # bd list omits dependency objects which bd show includes; use one canonical shape.
         # This also prevents approval invalidation merely because a different command was used.
-        return [await self.read(issue["id"]) for issue in issues]
+        return [await self.read(string(issue["id"])) for issue in issues]
 
-    async def ready(self) -> list[dict]:
+    async def ready(self) -> list[JSONObject]:
         result = await self.call("ready", "--limit", "0")
-        return result if isinstance(result, list) else result.get("issues", [])
+        return result if isinstance(result, list) else objects(result.get("issues", []))
 
-    async def update(self, id: str, changes: dict) -> dict:
+    async def update(self, id: str, changes: JSONObject) -> JSONObject:
         allowed = {"title": "--title", "description": "--description",
                    "acceptance_criteria": "--acceptance", "priority": "--priority",
                    "status": "--status", "assignee": "--assignee"}
@@ -87,25 +96,25 @@ class Beads:
         await self.call(*args)
         return await self.read(id)
 
-    async def close(self, id: str, reason: str) -> dict:
+    async def close(self, id: str, reason: str) -> JSONObject:
         issue = await self.read(id)
         if issue.get("status") != "closed":
             # Beads enforces assignee ownership. The host resolves on behalf of the
             # assigned logical developer after validation; never force past gates.
-            actor = ["--actor", issue["assignee"]] if issue.get("assignee") else []
+            actor = ["--actor", string(issue["assignee"])] if optional_string(issue.get("assignee")) else []
             await self.call("close", id, "--reason", reason, *actor)
         return await self.read(id)
 
-    async def delete(self, id: str) -> dict:
+    async def delete(self, id: str) -> JSONObject:
         await self.call("delete", id, "--force")
         return {"id": id, "deleted": True}
 
-    async def dependency(self, id: str, depends_on: str, remove: bool = False) -> dict:
+    async def dependency(self, id: str, depends_on: str, remove: bool = False) -> JSONObject:
         # Beads owns dependency validation and rejects cycles.
         await self.call("dep", "remove" if remove else "add", id, depends_on)
         return await self.read(id)
 
-    async def initialize(self) -> dict:
+    async def initialize(self) -> JSONObject:
         if not (self.root / ".beads").exists():
             await run([*self.command, "init", "--server", "--non-interactive", "--skip-agents", "--skip-hooks"], self.root)
         await run([*self.command, "dolt", "start"], self.root)

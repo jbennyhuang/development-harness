@@ -1,10 +1,21 @@
 """The same command definitions drive argparse and the machine-readable catalog."""
+from typing import Literal, TypedDict
 
-def arg(type="str", required=False, default=None, help=""):
+from .json_types import JSONObject, JSONValue, json_object
+
+
+class Argument(TypedDict):
+    type: Literal["str", "int", "bool", "object"]
+    required: bool
+    default: JSONValue
+    description: str
+
+
+def arg(type: Literal["str", "int", "bool", "object"]="str", required: bool=False, default: JSONValue=None, help: str="") -> Argument:
     return {"type": type, "required": required, "default": default, "description": help}
 
 
-COMMANDS = {
+COMMANDS: dict[str, tuple[str, dict[str, Argument]]] = {
     "status": ("Summarize durable project execution, issues, agents, and guidance", {}),
     "inspect": ("Inspect host prerequisites and project readiness", {}),
     "init": ("Initialize project configuration and Beads (Git requires explicit consent)", {
@@ -64,14 +75,14 @@ COMMANDS = {
 }
 
 
-def schema():
+def schema() -> JSONObject:
     from .config import Config
     from .domain import Result
     return {
         "version": 1,
-        "commands": {name: {"description": description, "arguments": args}
+        "commands": {name: {"description": description, "arguments": json_object(args)}
                      for name, (description, args) in COMMANDS.items()},
-        "configuration": Config.model_json_schema(), "worker_result": Result.model_json_schema(),
+        "configuration": json_object(Config.model_json_schema()), "worker_result": json_object(Result.model_json_schema()),
         "input": "--input accepts a JSON object from a file, or - for stdin. Worker submit also accepts a bare result object.",
         "output": {"success": {"ok": True, "result": "command result"},
                    "failure": {"ok": False, "error": {"code": "stable code", "message": "description", "details": {}}}},

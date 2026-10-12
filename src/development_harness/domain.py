@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .json_types import JSONObject, JSONValue
+
 
 class HarnessError(Exception):
-    def __init__(self, code: str, message: str, **details: Any):
+    def __init__(self, code: str, message: str, **details: JSONValue) -> None:
         super().__init__(message)
         self.code, self.details = code, details
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> JSONObject:
         return {"code": self.code, "message": str(self), "details": self.details}
 
 

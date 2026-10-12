@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Never, Protocol, override
 
 import httpx
 from pydantic import ValidationError
@@ -17,27 +18,33 @@ from .config import Config, project_root
 from .domain import HarnessError
 from .git import Git
 from .instructions import ORCHESTRATOR
+from .json_types import JSONObject, boolean, decode_object, json_object, optional_string, string
 from .tracker import Beads
 
 
 class Parser(argparse.ArgumentParser):
-    def error(self, message):
+    @override
+    def error(self, message: str) -> Never:
         raise HarnessError("invalid_arguments", message)
 
 
-def common(parser):
+def common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit a JSON envelope")
     parser.add_argument("--project", default=argparse.SUPPRESS, help="Select a project directory")
     parser.add_argument("--input", default=argparse.SUPPRESS, help="JSON arguments file, or - for stdin")
     parser.add_argument("--key", default=argparse.SUPPRESS, help="Idempotency key for a retried mutation")
 
 
-def parser():
+class Subcommands(Protocol):
+    def add_parser(self, name: str, *, help: str, description: str) -> argparse.ArgumentParser: ...
+
+
+def parser() -> Parser:
     root = Parser(prog="harness", description="Manage durable, isolated ACP development and review workflows")
     root.add_argument("--version", action="version", version=__version__)
     common(root)
     subs = root.add_subparsers(dest="group", required=True, parser_class=Parser)
-    groups = {}
+    groups: dict[str, Subcommands] = {}
     for name, (description, arguments) in COMMANDS.items():
         words = name.split()
         if len(words) == 1:
@@ -51,18 +58,16 @@ def parser():
         common(leaf)
         leaf.set_defaults(command=name)
         for key, definition in arguments.items():
-            options = {"default": argparse.SUPPRESS, "help": definition["description"]}
             if definition["type"] == "bool":
-                options["action"] = "store_true"
+                leaf.add_argument("--" + key.replace("_", "-"), action="store_true", default=argparse.SUPPRESS, help=definition["description"])
             elif definition["type"] == "object":
-                options["type"] = json.loads
+                leaf.add_argument("--" + key.replace("_", "-"), type=decode_object, default=argparse.SUPPRESS, help=definition["description"])
             else:
-                options["type"] = int if definition["type"] == "int" else str
-            leaf.add_argument("--" + key.replace("_", "-"), **options)
+                leaf.add_argument("--" + key.replace("_", "-"), type=int if definition["type"] == "int" else str, default=argparse.SUPPRESS, help=definition["description"])
     return root
 
 
-def selected_root(value=None):
+def selected_root(value: str | None=None) -> Path:
     if value:
         return project_root(value)
     cwd = Path.cwd().resolve()
@@ -72,26 +77,26 @@ def selected_root(value=None):
     return cwd
 
 
-async def initialize(root, args):
+async def initialize(root: Path, args: JSONObject) -> JSONObject:
     config = Config.load(root)
     if config.tool_paths:
         os.environ["PATH"] = os.pathsep.join(config.tool_paths) + os.pathsep + os.environ.get("PATH", "")
     if args.get("target_branch"):
-        config.target_branch = args["target_branch"]
+        config.target_branch = string(args["target_branch"])
     elif not (root / ".harness" / "config.json").exists():
         code, out, _ = await Git(root).call("branch", "--show-current", check=False)
         if not code and out.strip():
             config.target_branch = out.strip()
     git = Git(root, config.target_branch, config.remote)
-    await git.initialize(args.get("initialize_git", False))
+    await git.initialize(boolean(args.get("initialize_git", False)))
     config.save(root)
-    result = {"project": str(root), "target_branch": config.target_branch}
+    result: JSONObject = {"project": str(root), "target_branch": config.target_branch}
     if not args.get("skip_beads", False):
         result.update(await Beads(root, config.bd_command).initialize())
     return result
 
 
-def worker(command, args):
+def worker(command: str, args: JSONObject) -> JSONObject:
     url, token = os.getenv("HARNESS_WORKER_URL"), os.getenv("HARNESS_WORKER_TOKEN")
     if not url or not token:
         raise HarnessError("missing_assignment", "Worker credentials are provided only inside an active issue container")
@@ -100,15 +105,15 @@ def worker(command, args):
         if command == "worker assignment":
             response = transport.get(url + "/assignment", headers=headers)
         else:
-            response = transport.post(url + "/submit", json=args["result"], headers=headers)
-        envelope = response.json()
+            response = transport.post(url + "/submit", json=json_object(args["result"]), headers=headers)
+        envelope = json_object(response.json())
         if not envelope["ok"]:
-            error = envelope["error"]
-            raise HarnessError(error["code"], error["message"], **error.get("details", {}))
-        return envelope["result"]
+            error = json_object(envelope["error"])
+            raise HarnessError(string(error["code"]), string(error["message"]), **json_object(error.get("details", {})))
+        return json_object(envelope["result"])
 
 
-def execute(command, args, root, key):
+def execute(command: str, args: JSONObject, root: Path, key: str | None) -> JSONObject:
     if command.startswith("worker "):
         return worker(command, args)
     if command == "schema":
@@ -147,30 +152,28 @@ def execute(command, args, root, key):
         return {"closed": True}
     if command == "adapters probe":
         from .tooling import probe
-        return asyncio.run(probe(root, args["profile"], args.get("session", False)))
+        return asyncio.run(probe(root, string(args["profile"]), boolean(args.get("session", False))))
     if command == "adapters login":
         if client.status(root).get("pid"):
             raise HarnessError("service_running", "Stop the service before changing authentication configuration")
         from .tooling import login
-        return asyncio.run(login(root, args["profile"]))
+        return asyncio.run(login(root, string(args["profile"])))
     return client.invoke(root, command, args, key)
 
 
-def main():
+def main() -> None:
     json_mode = "--json" in sys.argv
     try:
-        values = vars(parser().parse_args())
-        command = values.pop("command")
+        values = json_object(vars(parser().parse_args()))
+        command = string(values.pop("command"))
         values.pop("group", None)
         values.pop("action", None)
-        json_mode = values.pop("json", False)
-        root = selected_root(values.pop("project", None))
-        key, input_path = values.pop("key", None), values.pop("input", None)
+        json_mode = boolean(values.pop("json", False))
+        root = selected_root(optional_string(values.pop("project", None)))
+        key, input_path = optional_string(values.pop("key", None)), optional_string(values.pop("input", None))
         if input_path:
             raw = sys.stdin.read() if input_path == "-" else Path(input_path).read_text(encoding="utf-8-sig")
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                raise HarnessError("invalid_arguments", "Input must be a JSON object")
+            data = decode_object(raw)
             if command == "worker submit" and "kind" in data:
                 data = {"result": data}
             values = {**data, **values}
@@ -190,10 +193,10 @@ def main():
         else:
             print(json.dumps(result, indent=2, ensure_ascii=True))
     except KeyboardInterrupt:
-        error = {"code": "interrupted", "message": "CLI interrupted; the service retains execution state", "details": {}}
+        error: JSONObject = {"code": "interrupted", "message": "CLI interrupted; the service retains execution state", "details": {}}
         print(json.dumps({"ok": False, "error": error}), file=sys.stdout if json_mode else sys.stderr)
         raise SystemExit(130)
     except (HarnessError, ValidationError, ValueError, OSError, httpx.HTTPError) as exc:
         error = exc.as_dict() if isinstance(exc, HarnessError) else {"code": "invalid_arguments" if isinstance(exc, (ValueError, ValidationError)) else "operation_failed", "message": str(exc), "details": {}}
         print(json.dumps({"ok": False, "error": error}), file=sys.stdout if json_mode else sys.stderr)
-        raise SystemExit(2 if error["code"] == "invalid_arguments" else 1)
+        raise SystemExit(2 if string(error["code"]) == "invalid_arguments" else 1)

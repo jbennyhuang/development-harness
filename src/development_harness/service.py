@@ -11,7 +11,6 @@ import signal
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
 
 from aiohttp import web
 from pydantic import ValidationError
@@ -20,6 +19,17 @@ from .commands import Commands
 from .config import Config, project_root
 from .domain import HarnessError
 from .engine import Engine
+from .json_types import (
+    JSONObject,
+    JSONValue,
+    array,
+    decode_object,
+    integer,
+    json_object,
+    json_value,
+    optional_string,
+    string,
+)
 from .store import Store
 
 LOG = logging.getLogger(__name__)
@@ -36,7 +46,7 @@ def state_directory(root: Path) -> Path:
 class ProjectLock:
     """Kernel-owned lock: released on process death on both Windows and POSIX."""
 
-    def __init__(self, path):
+    def __init__(self, path: Path) -> None:
         self.file = open(path, "a+b")
         self.file.seek(0)
         self.file.write(b"0")
@@ -53,11 +63,11 @@ class ProjectLock:
             self.file.close()
             raise HarnessError("service_running", "Another service owns this project") from exc
 
-    def close(self):
+    def close(self) -> None:
         self.file.close()
 
 
-def publish(path: Path, data: dict):
+def publish(path: Path, data: JSONObject) -> None:
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data), encoding="utf-8")
     if os.name != "nt":
@@ -71,7 +81,7 @@ def publish(path: Path, data: dict):
     temp.replace(path)
 
 
-async def serve(root: Path):
+async def serve(root: Path) -> None:
     state = state_directory(root)
     lock = ProjectLock(state / "service.lock")
     store = Store(state / "journal.sqlite")
@@ -85,7 +95,7 @@ async def serve(root: Path):
     generation = secrets.token_hex(16)
 
     @web.middleware
-    async def errors(request, handler):
+    async def errors(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
         try:
             return await handler(request)
         except HarnessError as exc:
@@ -97,33 +107,33 @@ async def serve(root: Path):
             LOG.exception("Control request failed")
             return web.json_response({"ok": False, "error": {"code": "internal_error", "message": "See service log", "details": {}}}, status=500)
 
-    def authorize(request):
+    def authorize(request: web.Request) -> None:
         received = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if not secrets.compare_digest(received, token):
             raise HarnessError("unauthorized", "Host service authentication failed")
 
-    async def status(request):
+    async def status(request: web.Request) -> JSONObject:
         authorize(request)
         return {"pid": os.getpid(), "project": str(root), "generation": generation,
                 "execution": store.execution_state()}
 
-    async def command(request):
+    async def command(request: web.Request) -> JSONObject:
         authorize(request)
-        data = await request.json()
-        return await commands.invoke(data["command"], data.get("args", {}), data.get("key"))
+        data = json_object(await request.json())
+        return await commands.invoke(string(data["command"]), json_object(data.get("args", {})), optional_string(data.get("key")))
 
-    async def shutdown(request):
+    async def shutdown(request: web.Request) -> JSONObject:
         authorize(request)
         stop.set()
         return {"stopping": True}
 
-    async def worker(request):
+    async def worker(request: web.Request) -> JSONObject:
         credential = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if request.path == "/assignment":
             return engine.worker_assignment(credential)
-        return engine.submit(credential, await request.json())
+        return engine.submit(credential, json_object(await request.json()))
 
-    def route(handler: Callable[[web.Request], Awaitable[Any]]) -> Callable[[web.Request], Awaitable[web.Response]]:
+    def route(handler: Callable[[web.Request], Awaitable[JSONValue]]) -> Callable[[web.Request], Awaitable[web.Response]]:
         async def respond(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "result": await handler(request)})
         return respond
@@ -142,13 +152,13 @@ async def serve(root: Path):
         worker_site = web.TCPSite(worker_runner, "0.0.0.0", 0)
         await admin_site.start()
         await worker_site.start()
-        admin_port = admin_runner.addresses[0][1]
-        worker_port = worker_runner.addresses[0][1]
+        admin_port = integer(array(array(json_value(admin_runner.addresses))[0])[1])
+        worker_port = integer(array(array(json_value(worker_runner.addresses))[0])[1])
         engine.worker_url = f"http://host.docker.internal:{worker_port}"
         publish(state / "service.json", {"url": f"http://127.0.0.1:{admin_port}", "token": token,
                                          "pid": os.getpid(), "generation": generation})
 
-        async def schedule():
+        async def schedule() -> None:
             while not stop.is_set():
                 try:
                     await engine.tick()
@@ -175,18 +185,18 @@ async def serve(root: Path):
         await admin_runner.cleanup()
         await worker_runner.cleanup()
         path = state / "service.json"
-        if path.exists() and json.loads(path.read_text()).get("generation") == generation:
+        if path.exists() and decode_object(path.read_text()).get("generation") == generation:
             path.unlink()
         store.close()
         lock.close()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    asyncio.run(serve(project_root(args.project)))
+    asyncio.run(serve(project_root(string(json_object(vars(args))["project"]))))
 
 
 if __name__ == "__main__":

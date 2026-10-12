@@ -1,19 +1,19 @@
 import pytest
-from adapter_contract import ThirdPartyAdapter, structural_contract
+from adapter_contract import ThirdPartyAdapter, subclass_contract
 from conftest import advance
 
-from development_harness.adapters import ADAPTERS, ACPAdapter
+from development_harness.adapters import ADAPTERS, Antigravity, Codex, CodingHarnessAdapter
 from development_harness.config import Config, Profile
 from development_harness.domain import HarnessError
 
 
-async def test_engine_runs_structural_third_party_adapter_and_retains_context(engine, monkeypatch):
+async def test_engine_runs_subclass_third_party_adapter_and_retains_context(engine, monkeypatch):
     instances = []
 
     def factory(profile, emit):
         adapter = ThirdPartyAdapter(engine, profile, emit)
         instances.append(adapter)
-        return structural_contract(adapter)
+        return subclass_contract(adapter)
 
     monkeypatch.setitem(ADAPTERS, "third-party", factory)
     engine.config.profiles["codex"] = Profile(provider="third-party", command=["custom-worker"])
@@ -26,7 +26,7 @@ async def test_engine_runs_structural_third_party_adapter_and_retains_context(en
     await engine.sync_issues()
     await advance(engine, lambda: engine.store.require("execution", issue["id"])["paused"])
     adapter = instances[0]
-    assert not isinstance(adapter, ACPAdapter)
+    assert isinstance(adapter, CodingHarnessAdapter)
     assert adapter.closed and adapter.prompts and adapter.restores == [None]
     assert adapter.context.issue_id == issue["id"]
     assert issue["id"] in engine.backend.stopped
@@ -71,3 +71,33 @@ async def test_mutated_unregistered_provider_rejected_before_binding_or_dispatch
     assert not engine.tasks and not engine.adapters
     assert not engine.backend.stopped
     assert not any(update["type"] == "agent.assigned" for update in engine.store.poll("typo")["updates"])
+
+
+def test_abstract_provider_hook_is_required():
+    from inspect import isabstract
+
+    assert isabstract(CodingHarnessAdapter)
+    with pytest.raises(TypeError, match="setup"):
+        CodingHarnessAdapter(Profile(command=["unused"]), lambda update: None)
+    assert issubclass(Codex, CodingHarnessAdapter)
+    assert issubclass(Antigravity, CodingHarnessAdapter)
+    assert not isabstract(Codex) and not isabstract(Antigravity)
+
+
+def test_pyright_rejects_wrong_provider_override(tmp_path):
+    import json
+    import subprocess
+
+    fixture = tmp_path / "bad_adapter.py"
+    fixture.write_text("""
+from typing import override
+from development_harness.adapters import CodingHarnessAdapter
+class WrongAdapter(CodingHarnessAdapter):
+    @override
+    async def setup(self, context: int) -> str:
+        return "invalid"
+""")
+    result = subprocess.run(["pyright", "--outputjson", str(fixture)], capture_output=True, text=True)
+    diagnostics = json.loads(result.stdout)["generalDiagnostics"]
+    assert result.returncode == 1
+    assert any(item.get("rule") == "reportIncompatibleMethodOverride" for item in diagnostics)
