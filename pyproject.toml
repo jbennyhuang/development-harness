@@ -3,8 +3,10 @@ name = "development-harness"
 version = "0.1.7"
 description = "A durable CLI for isolated ACP development and review workflows"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "jbennyhuang", email = "jbennyhuang@users.noreply.github.com" }
+    { name = "jbennyhuang" }
 ]
 requires-python = ">=3.14"
 dependencies = [

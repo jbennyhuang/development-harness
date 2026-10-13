@@ -158,3 +158,23 @@ The harness/backend retain container ownership checks, isolation/resource policy
 Git bundles, credential revocation, cancellation-shielded shutdown, quiescence and
 cleanup. Provider modules must use these facilities rather than bypass them.
 Pyright checks all production source and the adapter conformance fixture in strict mode; Ruff remains the lint check.
+
+## License and publication privacy
+
+This project is licensed under the [MIT License](LICENSE), copyright 2026
+jbennyhuang. Published package metadata retains the author name without a personal
+email address.
+
+Runtime credentials, provider sign-in state, private configuration, and `.harness/`
+state are local and ignored by Git. Environment templates such as `.env.example`,
+`.env.sample`, and `.env.production.example` may be tracked only with safe
+placeholder values. Ignore rules do not protect files already tracked by Git.
+
+Before publication, review personal information in package metadata, historical
+blobs, and commit author/committer headers, and scan Git history for secrets;
+deleting a present file does not remove its historical contents. The independent
+CI secret check uses Gitleaks 8.30.1 with redaction across all fetched Git history.
+It does not audit unreachable objects or detect every kind of personal information.
+A separate publication copy will be sanitized to remove local Beads metadata and
+historical personal emails, then audited before publication. Active repository
+history and local runtime state must remain intact during this preparation.

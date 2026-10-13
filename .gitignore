@@ -18,3 +18,42 @@ wheels/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local environment secrets; templates must contain placeholders only.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.sample
+!.env.*.example
+!.env.*.sample
+!*.env.example
+!*.env.sample
+
+# Private keys and certificate bundles
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# Provider sign-in state and private configuration (at any depth)
+.codex/
+.antigravity/
+.gemini/
+.claude/
+.aws/
+.azure/
+.gcloud/
+.ssh/
+.config/gcloud/
+.config/antigravity/
+.config/development-harness/
+credentials.json
+auth.json
+application_default_credentials.json
+.gitleaks-report*
