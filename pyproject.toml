@@ -1,6 +1,6 @@
 [project]
 name = "development-harness"
-version = "0.1.6"
+version = "0.1.7"
 description = "A durable CLI for isolated ACP development and review workflows"
 readme = "README.md"
 authors = [

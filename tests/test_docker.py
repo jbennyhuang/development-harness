@@ -23,7 +23,7 @@ async def test_isolated_container_candidate_roundtrip_validation_and_recovery(re
         assert not info["Mounts"] and not info["HostConfig"]["Privileged"]
         _, out, _ = await backend.exec(backend.name(id), ["git", "rev-parse", "--git-dir"])
         assert out.strip() == ".git"
-        _, node_version, _ = await run(backend.agent_command(id, Profile(command=["node", "--version"]), {}))
+        _, node_version, _ = await run(backend.agent_command(id, Profile(provider="codex", command=["node", "--version"]), {}))
         assert node_version.strip() == "v24.21.0"
         await backend.exec(backend.name(id), ["git", "commit", "--allow-empty", "-m", "container candidate"])
         _, head, _ = await backend.exec(backend.name(id), ["git", "rev-parse", "HEAD"])

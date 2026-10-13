@@ -13,15 +13,6 @@ from typing import AsyncContextManager
 from acp import Agent
 from acp.schema import InitializeResponse, TextContentBlock
 
-from .adapters import (
-    AdapterFactory,
-    LaunchContext,
-    close_session,
-    initialize,
-    resolve_adapter_factory,
-    session,
-    usage_exhausted,
-)
 from .backend import Backend, Docker
 from .config import Config
 from .domain import HarnessError, Result, Stage
@@ -39,6 +30,10 @@ from .json_types import (
     optional_string,
     string,
 )
+from .provider_types import AdapterFactory, LaunchContext
+from .providers import resolve_adapter_factory
+from .quota import usage_exhausted
+from .sessions import close_session, initialize, session
 from .store import Store
 from .tracker import Beads, Tracker, revision
 

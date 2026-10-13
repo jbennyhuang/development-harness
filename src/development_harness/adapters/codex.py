@@ -19,8 +19,9 @@ from pydantic import BaseModel
 
 from ..domain import HarnessError
 from ..json_types import JSONObject, json_object
-from ..process import process_options, terminate
-from . import Emit, LaunchContext, shield_cleanup, usage_exhausted
+from ..process import process_options, shield_cleanup, terminate
+from ..provider_types import Emit, LaunchContext
+from ..quota import usage_exhausted
 
 if TYPE_CHECKING:
     from ..config import Profile

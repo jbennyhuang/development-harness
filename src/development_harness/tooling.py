@@ -6,15 +6,17 @@ import os
 import uuid
 from pathlib import Path
 
-from .adapters import LaunchContext, close_session, initialize, resolve_adapter_factory, shield_cleanup
-from .adapters import session as open_session
 from .adapters.antigravity import login as login
 from .backend import Docker
 from .config import Config
 from .domain import HarnessError
 from .git import Git
 from .json_types import JSONObject, json_object, json_value, string
-from .process import run
+from .process import run, shield_cleanup
+from .provider_types import LaunchContext
+from .providers import resolve_adapter_factory
+from .sessions import close_session, initialize
+from .sessions import session as open_session
 
 
 async def setup_tools(root: Path) -> JSONObject:

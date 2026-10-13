@@ -12,12 +12,12 @@ from acp.schema import (
     PromptResponse,
 )
 
-from development_harness.adapters import AdapterFactory, Emit, LaunchContext
 from development_harness.adapters.antigravity import Antigravity
 from development_harness.adapters.codex import Codex
 from development_harness.config import Profile
 from development_harness.engine import Engine
 from development_harness.json_types import JSONObject
+from development_harness.provider_types import AdapterFactory, Emit, LaunchContext
 
 
 class ThirdPartyAgent:

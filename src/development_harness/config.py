@@ -13,7 +13,7 @@ STATE_DIR = ".harness"
 
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    provider: str = "generic"
+    provider: str
     command: list[str] = Field(min_length=1)
     env_names: list[str] = Field(default_factory=list)
     mode: str | None = None
@@ -23,7 +23,7 @@ class Profile(BaseModel):
 
     @model_validator(mode="after")
     def registered_provider(self) -> Profile:
-        from .adapters import resolve_adapter_factory
+        from .providers import resolve_adapter_factory
         resolve_adapter_factory(self.provider)
         return self
 

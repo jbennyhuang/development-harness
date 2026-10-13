@@ -2,9 +2,9 @@ import pytest
 from adapter_contract import third_party_factory
 from conftest import advance
 
-from development_harness.adapters import ADAPTERS
 from development_harness.config import Config, Profile
 from development_harness.domain import HarnessError
+from development_harness.providers import ADAPTERS
 
 
 async def test_engine_runs_independent_third_party_agent_factory_and_retains_context(engine, monkeypatch):
@@ -78,7 +78,7 @@ def test_pyright_rejects_nonconforming_provider_and_agent(tmp_path):
     fixture = tmp_path / "bad_provider.py"
     fixture.write_text("""
 from acp import Agent
-from development_harness.adapters import AdapterFactory
+from development_harness.provider_types import AdapterFactory
 class WrongAgent:
     async def prompt(self, session_id: int) -> str:
         return "invalid"
@@ -89,3 +89,62 @@ factory: AdapterFactory = lambda profile, emit, context: WrongAgent()
     diagnostics = json.loads(result.stdout)["generalDiagnostics"]
     assert result.returncode == 1
     assert sum(item.get("rule") == "reportAssignmentType" for item in diagnostics) >= 2
+
+
+@pytest.mark.parametrize("provider", ["generic", "codxe"])
+def test_removed_or_unknown_provider_rejected_without_creating_project_state(tmp_path, provider):
+    config_file = tmp_path / ".harness" / "config.json"
+    config_file.parent.mkdir()
+    import json
+    config_file.write_text(json.dumps({"profiles": {"fixture": {"provider": provider, "command": ["unused"]}}}))
+    with pytest.raises(HarnessError) as error:
+        Config.load(tmp_path)
+    assert error.value.code == "unknown_provider"
+    assert error.value.details == {"provider": provider}
+    assert list(config_file.parent.iterdir()) == [config_file]
+
+
+def test_profile_requires_explicit_provider_before_creating_project_state(tmp_path):
+    from pydantic import ValidationError
+    config_file = tmp_path / ".harness" / "config.json"
+    config_file.parent.mkdir()
+    config_file.write_text('{"profiles": {"fixture": {"command": ["unused"]}}}')
+    with pytest.raises(ValidationError) as error:
+        Config.load(tmp_path)
+    assert [(item["loc"], item["type"]) for item in error.value.errors()] == [
+        (("profiles", "fixture", "provider"), "missing")]
+    assert list(config_file.parent.iterdir()) == [config_file]
+
+
+def test_adapters_package_contains_only_independent_providers():
+    import ast
+    from pathlib import Path
+
+    import development_harness.adapters as adapters
+
+    directory = Path(adapters.__file__).parent
+    assert {path.name for path in directory.glob("*.py")} == {"__init__.py", "codex.py", "antigravity.py"}
+    initializer = (directory / "__init__.py").read_text()
+    assert len(initializer.splitlines()) <= 10
+    statements = ast.parse(initializer).body
+    assert ast.get_docstring(ast.parse(initializer))
+    assert all(isinstance(statement, (ast.Expr, ast.ImportFrom)) for statement in statements)
+    assert set(ADAPTERS) == {"codex", "agy"}
+
+
+@pytest.mark.parametrize("first", ["config", "engine", "tooling", "providers", "sessions", "adapters.codex", "adapters.antigravity"])
+def test_clean_import_order_and_default_profiles(first):
+    import subprocess
+    import sys
+
+    result = subprocess.run([sys.executable, "-c", f"""
+import importlib
+importlib.import_module('development_harness.{first}')
+from development_harness.config import Config
+from development_harness.providers import resolve_adapter_factory
+profiles = Config().profiles
+assert {{name: profile.provider for name, profile in profiles.items()}} == {{'codex': 'codex', 'agy': 'agy'}}
+for profile in profiles.values():
+    assert callable(resolve_adapter_factory(profile.provider))
+"""], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

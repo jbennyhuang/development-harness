@@ -22,7 +22,7 @@ For another project, use `--project C:/path/to/project`. Missing Git requires an
 
 `tools setup` installs pinned Beads and Dolt in `.harness/tool-cache` through mise. On Windows it also installs Go through mise and builds the pinned upstream Perles source because upstream does not publish a Windows binary. On Linux/macOS it installs the Perles release. No global PATH changes are needed.
 
-Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.6-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
+Build/install an executable distribution with `uv build` and `uv tool install dist/development_harness-0.1.7-py3-none-any.whl`. A `harness` entrypoint and `python -m development_harness` are both provided. Build the worker image from this source checkout before installing; image building needs the lockfile and trusted build resources. For self-improvement, run an installed wheel rather than an editable source environment.
 
 ## Configure providers and validation
 
@@ -44,7 +44,7 @@ Build/install an executable distribution with `uv build` and `uv tool install di
 
 Save this as a JSON file and run `harness config update --input config-update.json --json`. Checks are configured by the host, run in a fresh validation container, and must be present before execution starts. Candidate code and its dependencies are still executed as part of those checks; the container is their isolation boundary.
 
-Profiles configure provider, argv, optional ACP mode/model/auth method, allowed environment-variable names, and explicitly selected credential files. The defaults use Codex ACP 2.2.2 and Antigravity ACP 1.3.0 in the worker image. API keys are inherited only when named in `env_names`, and their values are not placed in process arguments. `HARNESS_MAX_AGENTS` overrides pool capacity when the service starts; restart the service to change its environment.
+Profiles require an explicit registered provider and configure argv, optional ACP mode/model/auth method, allowed environment-variable names, and explicitly selected credential files. The defaults use Codex ACP 2.2.2 and Antigravity ACP 1.3.0 in the worker image. API keys are inherited only when named in `env_names`, and their values are not placed in process arguments. `HARNESS_MAX_AGENTS` overrides pool capacity when the service starts; restart the service to change its environment.
 
 Example Codex sign-in configuration inside its profile:
 
@@ -114,8 +114,13 @@ At every ACP turn boundary the host revokes the scoped credential, closes the ad
 
 ## SDK Agent providers and extension
 
-`adapters/__init__.py` defines `LaunchContext`, JSON/update aliases, the typed
-provider registry, and ordinary orchestration helpers accepting `acp.Agent`.
+`adapters/` contains only a package docstring in `__init__.py` and the independent
+`codex.py` and `antigravity.py` providers. `provider_types.py` defines `LaunchContext`
+and update/emitter/factory types; `providers.py` holds the typed `ADAPTERS` registry.
+`sessions.py` holds bounded SDK negotiation and restoration policy used by Engine,
+probes and native login. Quota error classification lives in `quota.py`; the general
+cancellation shield lives with process utilities in `process.py`. No shared ACP
+transport or adapter base is used.
 The Engine stores SDK Agent proxies and calls SDK initialize, authenticate,
 new_session/load_session, set_session_mode, set_config_option, prompt and cancel.
 Initialization occurs once per connection with stable ACP v1 and empty client
@@ -124,7 +129,7 @@ authentication, mode and model use bounded SDK requests. Recorded issue history
 is included when native restoration is unavailable.
 
 Codex and Antigravity independently implement SDK Client callbacks and own their
-stdio transport/process lifecycle. Generic command support has its own client.
+stdio transport/process lifecycle. Profiles must explicitly name a registered provider.
 Their managed contexts yield the actual SDK Agent connection, while callback
 receivers remain separate from Agent proxies. Each emitter is instance-local;
 permission selection stays inside the issue container, unadvertised capabilities
@@ -132,7 +137,7 @@ are rejected, and unsupported extension diagnostics expose parameter keys only.
 Antigravity also retains managed native OAuth login and restricted native cache ACLs.
 
 A provider factory accepts `(Profile, Emit, LaunchContext)` and returns
-`AsyncContextManager[acp.Agent]`. Register it in `ADAPTERS` before validating a
+`AsyncContextManager[acp.Agent]`. Register it in `providers.ADAPTERS` before validating a
 profile, or inject it through `Engine(adapter_factory=...)`. Third-party providers
 need no project inheritance: they can implement SDK Client callbacks and yield
 `connect_to_agent(client, writer, reader)` from their own async context manager.

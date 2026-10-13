@@ -70,7 +70,7 @@ Agent implementations and review judgments remain variable inputs. The harness v
 |---|---|
 | Orchestrator | Translate developer intent into issues, configure agent pools, answer worker questions, and handle escalations through CLI commands. |
 | Persistent project service | Run on the host; own the scheduler, agent lifecycle, queues, worktrees, validation, final Git integration, and polling queries; survive chat disconnections. |
-| ACP provider adapters | Launch agents, negotiate capabilities, manage conversations, normalize output, cancel work, and reconnect. |
+| ACP provider adapters | Own provider launch/authentication, SDK Client callbacks and independent stdio transport cleanup. |
 | Execution backend | Run workers, validation commands, and candidate rebase/squash preparation inside an issue-specific development container; support additional sandbox backends later. |
 | Beads | Own issue descriptions, priorities, dependencies, comments, and resolution status. |
 | Harness database | Persist assignments, workflow stages, session references, operations, events, and artifact references. |
@@ -86,7 +86,7 @@ The proposed first provider integrations are:
 - Codex through the maintained Codex ACP adapter.
 - Antigravity through Google's published ACP server.
 
-Launch commands, authentication integration, permission configuration, capabilities, and provider-specific behavior belong inside those adapters. Protocol and dependency versions should be pinned and capabilities negotiated rather than assumed.
+Launch commands, native authentication integration, permission callbacks and provider-specific behavior belong inside those adapters. The orchestration uses SDK Agent methods to negotiate capabilities, authenticate configured sessions, restore conversations and cancel work. Protocol and dependency versions should be pinned and capabilities negotiated rather than assumed.
 
 Worker ACP adapters and CLI command handling are separate concerns: ACP dispatches coding agents, while CLI commands control and inspect the project service.
 
@@ -452,10 +452,15 @@ Documentation was consulted during planning on 2026-10-11. Compatibility and cap
 
 
 
-### SDK Agent architecture (0.1.6)
+### SDK Agent architecture (0.1.7)
 
-`adapters/__init__.py` defines `LaunchContext`, JSON/update aliases, the typed
-provider registry, and ordinary orchestration helpers accepting `acp.Agent`.
+`adapters/` contains only a package docstring in `__init__.py` and the independent
+`codex.py` and `antigravity.py` providers. `provider_types.py` defines `LaunchContext`
+and update/emitter/factory types; `providers.py` holds the typed `ADAPTERS` registry.
+`sessions.py` holds bounded SDK negotiation and restoration policy used by Engine,
+probes and native login. Quota error classification lives in `quota.py`; the general
+cancellation shield lives with process utilities in `process.py`. No shared ACP
+transport or adapter base is used.
 The Engine stores SDK Agent proxies and calls SDK initialize, authenticate,
 new_session/load_session, set_session_mode, set_config_option, prompt and cancel.
 Initialization occurs once per connection with stable ACP v1 and empty client
@@ -464,7 +469,7 @@ authentication, mode and model use bounded SDK requests. Recorded issue history
 is included when native restoration is unavailable.
 
 Codex and Antigravity independently implement SDK Client callbacks and own their
-stdio transport/process lifecycle. Generic command support has its own client.
+stdio transport/process lifecycle. Profiles must explicitly name a registered provider.
 Their managed contexts yield the actual SDK Agent connection, while callback
 receivers remain separate from Agent proxies. Each emitter is instance-local;
 permission selection stays inside the issue container, unadvertised capabilities
@@ -472,7 +477,7 @@ are rejected, and unsupported extension diagnostics expose parameter keys only.
 Antigravity also retains managed native OAuth login and restricted native cache ACLs.
 
 A provider factory accepts `(Profile, Emit, LaunchContext)` and returns
-`AsyncContextManager[acp.Agent]`. Register it in `ADAPTERS` before validating a
+`AsyncContextManager[acp.Agent]`. Register it in `providers.ADAPTERS` before validating a
 profile, or inject it through `Engine(adapter_factory=...)`. Third-party providers
 need no project inheritance: they can implement SDK Client callbacks and yield
 `connect_to_agent(client, writer, reader)` from their own async context manager.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import TypedDict
 
@@ -69,3 +70,16 @@ async def run(argv: list[str], cwd: Path | None = None, timeout: float = 120,
                            returncode=proc.returncode, stderr=stderr, stdout=stdout)
     assert proc.returncode is not None
     return proc.returncode, stdout, stderr
+
+
+async def shield_cleanup(work: Coroutine[object, object, None]) -> None:
+    task = asyncio.create_task(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError

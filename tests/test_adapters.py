@@ -10,12 +10,14 @@ import pytest
 from acp import RequestError
 from acp.schema import PermissionOption, TextContentBlock, ToolCallUpdate
 
-from development_harness.adapters import ADAPTERS, LaunchContext, initialize, session, usage_exhausted
 from development_harness.adapters.antigravity import Antigravity
 from development_harness.adapters.codex import Codex
-from development_harness.adapters.generic import GenericClient
 from development_harness.config import Config, Profile
 from development_harness.domain import HarnessError
+from development_harness.provider_types import LaunchContext
+from development_harness.providers import ADAPTERS
+from development_harness.quota import usage_exhausted
+from development_harness.sessions import initialize, session
 
 COMMAND = [sys.executable, str(Path(__file__).parent / "fixtures" / "acp_agent.py")]
 
@@ -32,7 +34,7 @@ class FixtureBackend:
         return COMMAND
 
 
-@pytest.mark.parametrize("provider", ["generic", "codex", "agy"])
+@pytest.mark.parametrize("provider", ["codex", "agy"])
 async def test_independent_managed_stdio_negotiation_permissions_restore_and_configuration(provider):
     updates, backend = [], FixtureBackend()
     profile = Profile(provider=provider, command=COMMAND, mode="full", model="fixture-model", auth_method="fixture-auth")
@@ -70,11 +72,12 @@ def test_provider_owned_defaults_remain_compatible():
 
 async def test_stdio_emitters_are_isolated_and_one_exit_keeps_other_connection_alive():
     first_updates, second_updates = [], []
-    profile = Profile(command=COMMAND)
+    profile = Profile(provider="codex", command=COMMAND)
     async with AsyncExitStack() as stack:
         first_manager = ADAPTERS["codex"](profile, first_updates.append, LaunchContext(FixtureBackend(), "first", {}))
         first = await first_manager.__aenter__()
-        second = await stack.enter_async_context(ADAPTERS["agy"](profile, second_updates.append, LaunchContext(FixtureBackend(), "second", {})))
+        second_profile = Profile(provider="agy", command=COMMAND)
+        second = await stack.enter_async_context(ADAPTERS["agy"](second_profile, second_updates.append, LaunchContext(FixtureBackend(), "second", {})))
         try:
             await asyncio.gather(initialize(first), initialize(second))
             await asyncio.gather(first.new_session(cwd="/workspace", mcp_servers=[]), second.new_session(cwd="/workspace", mcp_servers=[]))
@@ -91,18 +94,18 @@ async def test_stdio_emitters_are_isolated_and_one_exit_keeps_other_connection_a
         assert {"method": "fixture/status", "params": {"text": "still connected"}} not in first_updates
 
 
-@pytest.mark.parametrize("client_type", [Codex, Antigravity, GenericClient])
+@pytest.mark.parametrize("client_type", [Codex, Antigravity])
 @pytest.mark.parametrize("method", ["write_text_file", "read_text_file", "create_terminal", "terminal_output",
     "release_terminal", "wait_for_terminal_exit", "kill_terminal", "create_elicitation", "complete_elicitation"])
 async def test_unadvertised_callbacks_rejected(client_type, method):
-    client = client_type(Profile(command=["unused"]), lambda data: None)
+    client = client_type(Profile(provider="codex" if client_type is Codex else "agy", command=["unused"]), lambda data: None)
     with pytest.raises(RequestError):
         await getattr(client, method)(session_id="session")
 
 
-@pytest.mark.parametrize("client_type", [Codex, Antigravity, GenericClient])
+@pytest.mark.parametrize("client_type", [Codex, Antigravity])
 async def test_permission_without_allow_option_fails_explicitly(client_type):
-    client = client_type(Profile(command=["unused"]), lambda data: None)
+    client = client_type(Profile(provider="codex" if client_type is Codex else "agy", command=["unused"]), lambda data: None)
     with pytest.raises(HarnessError, match="Agent offered no allow option"):
         await client.request_permission("session", ToolCallUpdate(tool_call_id="call"), [
             PermissionOption(option_id="deny", name="Reject", kind="reject_once")])
@@ -186,7 +189,7 @@ async def test_native_login_managed_sdk_authentication_and_cache_acl(tmp_path, m
             assert file.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("provider,client_name", [("codex", "Codex"), ("agy", "Antigravity"), ("generic", "GenericClient")])
+@pytest.mark.parametrize("provider,client_name", [("codex", "Codex"), ("agy", "Antigravity")])
 @pytest.mark.parametrize("failure", ["spawn", "connect", "initialize", "authenticate", "session/new", "session/set_mode", "session/set_config_option", "session/prompt"])
 async def test_owned_process_and_stderr_finish_on_all_startup_and_prompt_failures(provider, client_name, failure, monkeypatch):
     from importlib import import_module
@@ -209,7 +212,7 @@ async def test_owned_process_and_stderr_finish_on_all_startup_and_prompt_failure
         def agent_command(self, *args):
             return ["/nonexistent-provider"] if failure == "spawn" else [*COMMAND, failure]
 
-    profile = Profile(command=COMMAND, auth_method="fixture-auth", mode="full", model="fixture-model")
+    profile = Profile(provider=provider, command=COMMAND, auth_method="fixture-auth", mode="full", model="fixture-model")
     with pytest.raises(Exception):
         async with ADAPTERS[provider](profile, lambda data: None, LaunchContext(Backend(), "failure", {})) as agent:
             caps = await initialize(agent)
@@ -220,7 +223,7 @@ async def test_owned_process_and_stderr_finish_on_all_startup_and_prompt_failure
     assert client.stderr_task is None or client.stderr_task.done()
 
 
-@pytest.mark.parametrize("provider,client_name", [("codex", "Codex"), ("agy", "Antigravity"), ("generic", "GenericClient")])
+@pytest.mark.parametrize("provider,client_name", [("codex", "Codex"), ("agy", "Antigravity")])
 async def test_managed_transport_cleanup_survives_repeated_cancellation(provider, client_name, monkeypatch):
     from importlib import import_module
     module = import_module("development_harness.adapters." + {"agy": "antigravity"}.get(provider, provider))
@@ -238,7 +241,7 @@ async def test_managed_transport_cleanup_survives_repeated_cancellation(provider
     monkeypatch.setattr(client_type, "close", close)
 
     async def run():
-        async with ADAPTERS[provider](Profile(command=COMMAND), lambda data: None, LaunchContext(FixtureBackend(), "cancel", {})) as agent:
+        async with ADAPTERS[provider](Profile(provider=provider, command=COMMAND), lambda data: None, LaunchContext(FixtureBackend(), "cancel", {})) as agent:
             await initialize(agent)
             entered.set()
             await asyncio.Event().wait()
